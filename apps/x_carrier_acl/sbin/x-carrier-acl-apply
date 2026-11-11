@@ -1,0 +1,542 @@
+#!/usr/bin/python3 -I
+# x-carrier-acl-apply: program the carrier firewall set from the snapshot written by the x_carrier_acl worker.
+# docs/design/carrier_acl.md sections 7.2-7.4. Runs as root from x-carrier-acl-apply.service (started by
+# x-carrier-acl-apply.path when firewall.gen changes, at boot, and after a firewall service restart).
+#
+# Trust: the snapshot is written by www-data and is treated as hostile. It is parsed with a strict line grammar
+# and every CIDR is re-validated here (reserved ranges and hard width limits are hard-coded; they mirror
+# x_carrier_acl_validate.php). Nothing is done to the kernel until the whole file has passed. No network, no
+# parser of remote content. Python standard library only.
+#
+# Snapshot grammar versions: 1 (carrier entries only) and 2 (adds a "local N" section of admin-entered LAN/VPN
+# networks, section 12 of the design). Both are accepted so an upgrade never leaves a valid older snapshot
+# unapplied; the new worker rewrites a version 1 snapshot as version 2 on its next tick.
+#
+# Usage: x-carrier-acl-apply [--boot]
+#   --boot  re-apply the current snapshot even if its generation is lower than the last applied one
+#           (state restore). Without it an older generation is refused (replay protection); the same
+#           generation is re-applied, which is what a boot or a firewall restart needs.
+#
+# Exit codes: 0 applied, 1 refused or failed, 3 no supported firewall backend (status "inactive").
+
+import fcntl
+import ipaddress
+import json
+import os
+import pwd
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import syslog
+import tempfile
+import time
+
+EXPORT_DIR = '/var/lib/x_carrier_acl/export'
+STATE_DIR = '/var/lib/x_carrier_acl/state'
+SNAPSHOT = EXPORT_DIR + '/firewall.snapshot'
+APPLIED_GEN = STATE_DIR + '/applied.gen'
+STATUS = STATE_DIR + '/status.json'
+LOCK = STATE_DIR + '/apply.lock'
+RULES_V4 = '/etc/iptables/rules.v4'
+NFT_CONF = '/etc/nftables.conf'
+IPSETS_FILE = '/etc/iptables/ipsets'
+F2B_DIR = '/etc/fail2ban/jail.d'
+F2B_DROPIN = F2B_DIR + '/x_carrier_acl.local'
+F2B_JAIL_LOCAL = '/etc/fail2ban/jail.local'
+F2B_SOCKET = '/run/fail2ban/fail2ban.sock'
+
+SNAPSHOT_OWNER = 'www-data'
+MAX_BYTES = 1048576
+MAX_LINES = 10000
+F2B_MAX_ENTRIES = 2000
+V4_REJECT_SHORTER_THAN = 16
+V6_REJECT_SHORTER_THAN = 32
+LOCAL_V4_REJECT_SHORTER_THAN = 8
+LOCAL_V6_REJECT_SHORTER_THAN = 32
+LOCAL_MAX = 500
+SNAPSHOT_VERSIONS = ('1', '2')
+# ports are www-data controlled too: never below 1024, never a port of a local service, bounded width
+PORT_MIN = 1024
+PORT_FORBIDDEN = (3306, 5432, 6379, 7443, 8021, 11211)
+SIP_MAX_WIDTH = 100
+RTP_MAX_WIDTH = 32768
+
+SET_V4 = 'x_carrier_v4'
+SET_V6 = 'x_carrier_v6'
+LAN_V4 = 'x_carrier_lan_v4'
+LAN_V6 = 'x_carrier_lan_v6'
+OUR_SETS = (SET_V4, SET_V6, LAN_V4, LAN_V6)
+CHAIN = 'X_CARRIER_ACL'
+NFT_TABLE = 'x_carrier_acl'
+
+RESERVED = [ipaddress.ip_network(n) for n in (
+	'0.0.0.0/8', '10.0.0.0/8', '100.64.0.0/10', '127.0.0.0/8', '169.254.0.0/16', '172.16.0.0/12', '192.0.0.0/24',
+	'192.0.2.0/24', '192.168.0.0/16', '198.18.0.0/15', '198.51.100.0/24', '203.0.113.0/24', '224.0.0.0/4',
+	'240.0.0.0/4', '255.255.255.255/32',
+	'::/128', '::1/128', '::ffff:0:0/96', '64:ff9b::/96', '100::/64', '2001:db8::/32', 'fc00::/7', 'fe80::/10',
+	'ff00::/8',
+)]
+
+# local networks: private ranges (RFC1918, CGNAT 100.64/10, ULA fc00::/7) are allowed; these never are.
+# Mirrors x_carrier_acl_validate::local_reserved_v4/v6.
+LOCAL_RESERVED = [ipaddress.ip_network(n) for n in (
+	'0.0.0.0/8', '127.0.0.0/8', '169.254.0.0/16', '192.0.0.0/24', '192.0.2.0/24', '198.18.0.0/15', '198.51.100.0/24',
+	'203.0.113.0/24', '224.0.0.0/4', '240.0.0.0/4', '255.255.255.255/32',
+	'::/128', '::1/128', '::ffff:0:0/96', '64:ff9b::/96', '100::/64', '2001:db8::/32', 'fe80::/10', 'ff00::/8',
+)]
+
+# local networks may use the short LOCAL_* prefixes only inside these; elsewhere the carrier widths apply.
+# Mirrors x_carrier_acl_validate::local_private_v4/v6.
+LOCAL_PRIVATE = [ipaddress.ip_network(n) for n in (
+	'10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '100.64.0.0/10', 'fc00::/7',
+)]
+
+ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'}
+TIMEOUT = 60
+
+
+class Refuse(Exception):
+	pass
+
+
+def log(priority, message):
+	syslog.openlog('x_carrier_acl', syslog.LOG_PID, syslog.LOG_DAEMON)
+	syslog.syslog(priority, 'apply: ' + message)
+	stream = sys.stderr if priority <= syslog.LOG_WARNING else sys.stdout
+	print('x-carrier-acl-apply: ' + message, file=stream)
+
+
+def atomic_write(path, content, mode):
+	directory = os.path.dirname(path)
+	fd, tmp = tempfile.mkstemp(prefix='.' + os.path.basename(path) + '.', dir=directory)
+	try:
+		with os.fdopen(fd, 'w') as handle:
+			handle.write(content)
+			handle.flush()
+			os.fsync(handle.fileno())
+		os.chmod(tmp, mode)
+		os.rename(tmp, path)
+	except BaseException:
+		try:
+			os.unlink(tmp)
+		except OSError:
+			pass
+		raise
+
+
+def write_status(status):
+	status['ts'] = time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
+	atomic_write(STATUS, json.dumps(status, sort_keys=True) + '\n', 0o644)
+
+
+def run(argv, stdin=None):
+	result = subprocess.run(argv, input=stdin, capture_output=True, text=True, env=ENV, timeout=TIMEOUT, check=False)
+	if result.returncode != 0:
+		raise Refuse('%s failed (%d): %s' % (' '.join(argv[:3]), result.returncode, (result.stderr or result.stdout).strip()[:500]))
+	return result.stdout
+
+
+def binary(name):
+	path = shutil.which(name, path=ENV['PATH'])
+	if path is None:
+		raise Refuse(name + ' not found')
+	return path
+
+
+# --- snapshot ---------------------------------------------------------------------------------------------------
+
+def read_snapshot():
+	"""Open without following symlinks, check owner/type/size on the open descriptor, return the text."""
+	try:
+		fd = os.open(SNAPSHOT, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+	except OSError as error:
+		raise Refuse('cannot open snapshot: %s' % error)
+	try:
+		info = os.fstat(fd)
+		if not stat.S_ISREG(info.st_mode):
+			raise Refuse('snapshot is not a regular file')
+		if info.st_uid != pwd.getpwnam(SNAPSHOT_OWNER).pw_uid:
+			raise Refuse('snapshot is not owned by ' + SNAPSHOT_OWNER)
+		if info.st_size >= MAX_BYTES:
+			raise Refuse('snapshot is too large')
+		data = os.read(fd, MAX_BYTES)
+	finally:
+		os.close(fd)
+	try:
+		return data.decode('ascii')
+	except UnicodeDecodeError:
+		raise Refuse('snapshot is not ASCII')
+
+
+def parse_ports(value, max_width):
+	match = re.fullmatch(r'(\d{1,5}):(\d{1,5})', value)
+	if not match:
+		raise Refuse('invalid port range')
+	low, high = int(match.group(1)), int(match.group(2))
+	if not (PORT_MIN <= low <= 65535 and PORT_MIN <= high <= 65535 and low <= high):
+		raise Refuse('port range outside %d-65535' % PORT_MIN)
+	if high - low + 1 > max_width:
+		raise Refuse('port range wider than %d ports' % max_width)
+	for port in PORT_FORBIDDEN:
+		if low <= port <= high:
+			raise Refuse('port range includes reserved port %d' % port)
+	return (low, high)
+
+
+def check_network(family, text, local=False):
+	"""Carrier rules by default; local=True applies the local-network rules (private allowed, same hard rejects)."""
+	if '%' in text:
+		raise Refuse('scope ids are not allowed: ' + text[:64])
+	try:
+		network = ipaddress.ip_network(text, strict=True)
+	except ValueError as error:
+		raise Refuse('invalid cidr %s: %s' % (text[:64], error))
+	if network.version != family:
+		raise Refuse('family mismatch for ' + text)
+	if network.prefixlen == 0:
+		raise Refuse('default route refused')
+	if local and any(p.version == network.version and network.subnet_of(p) for p in LOCAL_PRIVATE):
+		minimum = LOCAL_V4_REJECT_SHORTER_THAN if family == 4 else LOCAL_V6_REJECT_SHORTER_THAN
+	else:
+		minimum = V4_REJECT_SHORTER_THAN if family == 4 else V6_REJECT_SHORTER_THAN
+	if network.prefixlen < minimum:
+		raise Refuse('prefix shorter than /%d: %s' % (minimum, text))
+	for reserved in (LOCAL_RESERVED if local else RESERVED):
+		if reserved.version == network.version and network.overlaps(reserved):
+			raise Refuse('reserved range refused: ' + text)
+	return network
+
+
+def parse_snapshot(text):
+	lines = text.split('\n')
+	if lines and lines[-1] == '':
+		lines.pop()
+	if len(lines) > MAX_LINES:
+		raise Refuse('too many lines')
+	if len(lines) < 8:
+		raise Refuse('snapshot is truncated')
+	expect = iter(lines)
+
+	def take(pattern, what):
+		line = next(expect)
+		match = re.fullmatch(pattern, line)
+		if not match:
+			raise Refuse('unexpected line, wanted %s' % what)
+		return match
+
+	version = take(r'x_carrier_acl snapshot (\d{1,3})', 'header').group(1)
+	if version not in SNAPSHOT_VERSIONS:
+		raise Refuse('unsupported snapshot version ' + version)
+	generation = int(take(r'generation (\d{1,18})', 'generation').group(1))
+	mode = take(r'mode (allow|restrict)', 'mode').group(1)
+	sip = parse_ports(take(r'ports sip (\S+)', 'sip ports').group(1), SIP_MAX_WIDTH)
+	rtp = parse_ports(take(r'ports rtp (\S+)', 'rtp ports').group(1), RTP_MAX_WIDTH)
+	if sip[0] <= rtp[1] and rtp[0] <= sip[1]:
+		raise Refuse('sip and rtp port ranges overlap')
+	fail2ban = take(r'fail2ban (on|off)', 'fail2ban').group(1) == 'on'
+	count = int(take(r'count (\d{1,6})', 'count').group(1))
+
+	entries = []
+	remaining = lines[7:]
+	if not remaining or remaining[-1] != 'end':
+		raise Refuse('missing end line')
+	body = iter(remaining[:-1])
+	local_count = None
+	for line in body:
+		match = re.fullmatch(r'v([46]) (\S{1,64}) (signaling|media)', line)
+		if match:
+			entries.append((check_network(int(match.group(1)), match.group(2)), match.group(3)))
+			continue
+		match = re.fullmatch(r'local (\d{1,6})', line)
+		if match and version != '1':
+			local_count = int(match.group(1))
+			break
+		raise Refuse('unknown line')
+	if len(entries) != count:
+		raise Refuse('count %d does not match %d entries' % (count, len(entries)))
+	if version != '1' and local_count is None:
+		raise Refuse('missing local section')
+
+	# local networks: allowed for signaling and media like carriers, re-validated under the local rules
+	local = []
+	for line in body:
+		match = re.fullmatch(r'local v([46]) (\S{1,64}) (signaling|media)', line)
+		if not match:
+			raise Refuse('unknown line in local section')
+		local.append((check_network(int(match.group(1)), match.group(2), local=True), match.group(3)))
+	if local_count is not None and len(local) != local_count:
+		raise Refuse('local count %d does not match %d entries' % (local_count, len(local)))
+	lan_v4 = sorted({network for network, role in local if network.version == 4})
+	lan_v6 = sorted({network for network, role in local if network.version == 6})
+	if len(lan_v4) + len(lan_v6) > LOCAL_MAX:
+		raise Refuse('more than %d local networks' % LOCAL_MAX)
+
+	# the carrier set must not be empty in restrict mode, whatever the local section holds (unchanged from v1)
+	if count == 0 and mode == 'restrict':
+		raise Refuse('empty set refused in restrict mode')
+
+	v4 = sorted({network for network, role in entries if network.version == 4})
+	v6 = sorted({network for network, role in entries if network.version == 6})
+	return {'version': int(version), 'generation': generation, 'mode': mode, 'sip': sip, 'rtp': rtp, 'fail2ban': fail2ban,
+		'v4': v4, 'v6': v6, 'lan_v4': lan_v4, 'lan_v6': lan_v6}
+
+
+# --- backends ---------------------------------------------------------------------------------------------------
+
+def ipv6_enabled():
+	"""False on hosts booted with ipv6.disable=1, where ip6tables cannot work at all."""
+	return os.path.exists('/proc/net/if_inet6')
+
+
+def detect_backend():
+	"""Mirrors upstream fail2ban.sh: rules.v4 present means iptables, else nftables.conf means nft."""
+	if os.path.exists(RULES_V4):
+		return 'iptables'
+	if os.path.exists(NFT_CONF):
+		return 'nft'
+	return None
+
+
+def port_text(ports, separator):
+	low, high = ports
+	return str(low) if low == high else '%d%s%d' % (low, separator, high)
+
+
+def apply_iptables(snapshot):
+	ipset = binary('ipset')
+	# 1. sets: build the _new sets in one ipset process, then swap atomically
+	commands = []
+	# local network sets always exist (empty for a version 1 snapshot) so the chain can reference them
+	families = [(SET_V4, 'inet', snapshot['v4']), (LAN_V4, 'inet', snapshot['lan_v4'])]
+	if ipv6_enabled():
+		families.append((SET_V6, 'inet6', snapshot['v6']))
+		families.append((LAN_V6, 'inet6', snapshot['lan_v6']))
+	for name, family, networks in families:
+		commands.append('create %s hash:net family %s hashsize 1024 maxelem 65536' % (name, family))
+		commands.append('create %s_new hash:net family %s hashsize 1024 maxelem 65536' % (name, family))
+		commands.append('flush %s_new' % name)
+		for network in networks:
+			commands.append('add %s_new %s' % (name, network.with_prefixlen))
+	run([ipset, '-exist', 'restore'], '\n'.join(commands) + '\n')
+	for name, family, networks in families:
+		run([ipset, 'swap', name + '_new', name])
+		run([ipset, 'destroy', name + '_new'])
+
+	# 2. chains: rebuild only our chain, flush and rules in one iptables-restore transaction
+	sip = port_text(snapshot['sip'], ':')
+	rtp = port_text(snapshot['rtp'], ':')
+	tables = [('iptables', 'iptables-restore', SET_V4, LAN_V4)]
+	if ipv6_enabled():
+		tables.append(('ip6tables', 'ip6tables-restore', SET_V6, LAN_V6))
+	for tool, restore, set_name, lan_name in tables:
+		rules = ['*filter', ':%s - [0:0]' % CHAIN, '-F %s' % CHAIN]
+		# carriers and local networks are accepted the same way (signaling and media), ahead of any restrict drop
+		for accepted in (set_name, lan_name):
+			rules.append('-A %s -p udp -m multiport --dports %s,%s -m set --match-set %s src -j ACCEPT' % (CHAIN, sip, rtp, accepted))
+			rules.append('-A %s -p tcp -m multiport --dports %s -m set --match-set %s src -j ACCEPT' % (CHAIN, sip, accepted))
+		if snapshot['mode'] == 'restrict':
+			# never drop loopback or replies to our own traffic (outbound REGISTERs, DNS, database)
+			rules.append('-A %s -i lo -j RETURN' % CHAIN)
+			rules.append('-A %s -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN' % CHAIN)
+			rules.append('-A %s -p udp -m multiport --dports %s -m set ! --match-set %s src -j DROP' % (CHAIN, sip, set_name))
+			rules.append('-A %s -p tcp -m multiport --dports %s -m set ! --match-set %s src -j DROP' % (CHAIN, sip, set_name))
+		rules.append('COMMIT')
+		run([binary(restore), '--wait=10', '--noflush'], '\n'.join(rules) + '\n')
+
+		# 3. jump at INPUT position 1, ahead of the friendly-scanner drops and fail2ban chains
+		command = binary(tool)
+		jump = '-A INPUT -j ' + CHAIN
+		# an empty INPUT chain makes "-S INPUT 1" fail; treat that as "no first rule"
+		listing = subprocess.run([command, '-w', '10', '-S', 'INPUT', '1'], capture_output=True, text=True, env=ENV, timeout=TIMEOUT)
+		first = listing.stdout.strip() if listing.returncode == 0 else ''
+		if first != jump:
+			while subprocess.run([command, '-w', '10', '-C', 'INPUT', '-j', CHAIN], capture_output=True, env=ENV, timeout=TIMEOUT).returncode == 0:
+				run([command, '-w', '10', '-D', 'INPUT', '-j', CHAIN])
+			run([command, '-w', '10', '-I', 'INPUT', '1', '-j', CHAIN])
+
+	# 4. persist our sets for netfilter-persistent (restored before rules.v4 at boot); other sets are kept
+	if os.path.isdir(os.path.dirname(IPSETS_FILE)):
+		kept = []
+		if os.path.exists(IPSETS_FILE):
+			with open(IPSETS_FILE) as handle:
+				for line in handle.read().splitlines():
+					fields = line.split()
+					if len(fields) >= 2 and fields[1] in OUR_SETS + tuple(name + '_new' for name in OUR_SETS):
+						continue
+					kept.append(line)
+		ours = ''.join(run([ipset, 'save', name]) for name, family, networks in families)
+		atomic_write(IPSETS_FILE, '\n'.join(kept + ours.splitlines()) + '\n', 0o640)
+
+
+def apply_nft(snapshot):
+	nft = binary('nft')
+	sip = port_text(snapshot['sip'], '-')
+	rtp = port_text(snapshot['rtp'], '-')
+
+	def elements(networks):
+		# nft interval sets refuse overlapping elements; collapse first
+		collapsed = list(ipaddress.collapse_addresses(networks))
+		return ('elements = { %s }; ' % ', '.join(n.with_prefixlen for n in collapsed)) if collapsed else ''
+
+	lines = [
+		# create-if-missing, delete, recreate: one atomic transaction that never touches other tables
+		'table inet %s {}' % NFT_TABLE,
+		'delete table inet %s' % NFT_TABLE,
+		'table inet %s {' % NFT_TABLE,
+		'	set carrier_v4 { type ipv4_addr; flags interval; %s}' % elements(snapshot['v4']),
+		'	set carrier_v6 { type ipv6_addr; flags interval; %s}' % elements(snapshot['v6']),
+		'	set local_v4 { type ipv4_addr; flags interval; %s}' % elements(snapshot['lan_v4']),
+		'	set local_v6 { type ipv6_addr; flags interval; %s}' % elements(snapshot['lan_v6']),
+		'	chain input {',
+		'		type filter hook input priority -10; policy accept;',
+	]
+	for suffix in ('carrier', 'local'):
+		lines += [
+			'		ip saddr @%s_v4 udp dport { %s, %s } counter accept' % (suffix, sip, rtp),
+			'		ip saddr @%s_v4 tcp dport %s counter accept' % (suffix, sip),
+			'		ip6 saddr @%s_v6 udp dport { %s, %s } counter accept' % (suffix, sip, rtp),
+			'		ip6 saddr @%s_v6 tcp dport %s counter accept' % (suffix, sip),
+		]
+	if snapshot['mode'] == 'restrict':
+		lines.append('		iif "lo" accept')
+		lines.append('		ct state established,related accept')
+		lines.append('		udp dport %s counter drop' % sip)
+		lines.append('		tcp dport %s counter drop' % sip)
+	lines += ['	}', '}']
+	with tempfile.NamedTemporaryFile('w', prefix='x_carrier_acl.', suffix='.nft', delete=True) as handle:
+		handle.write('\n'.join(lines) + '\n')
+		handle.flush()
+		run([nft, '-f', handle.name])
+
+
+# --- fail2ban ---------------------------------------------------------------------------------------------------
+
+def admin_ignoreip():
+	"""ignoreip already set in jail.local [DEFAULT], kept so our drop-in does not drop the admin's entries."""
+	if not os.path.exists(F2B_JAIL_LOCAL):
+		return []
+	import configparser
+	parser = configparser.RawConfigParser(strict=False, interpolation=None)
+	try:
+		parser.read(F2B_JAIL_LOCAL)
+		value = parser.get('DEFAULT', 'ignoreip', fallback='')
+	except (configparser.Error, OSError, UnicodeDecodeError):
+		return []
+	return [token for token in re.split(r'[\s,]+', value) if re.fullmatch(r'[A-Za-z0-9:./_-]{1,128}', token)]
+
+
+def apply_fail2ban(snapshot):
+	"""Returns a note for status.json. Reloads fail2ban only when the drop-in changed and fail2ban is running."""
+	if not os.path.isdir(F2B_DIR):
+		return 'fail2ban not installed'
+	current = None
+	if os.path.exists(F2B_DROPIN):
+		with open(F2B_DROPIN) as handle:
+			current = handle.read()
+	note = 'ok'
+	if snapshot['fail2ban']:
+		networks = [n.with_prefixlen for n in snapshot['v4'] + snapshot['v6'] + snapshot['lan_v4'] + snapshot['lan_v6']]
+		if len(networks) > F2B_MAX_ENTRIES:
+			# never leave a stale list of ignored addresses behind
+			if current is not None:
+				os.unlink(F2B_DROPIN)
+				reload_fail2ban()
+			return 'ignoreip skipped: too many entries'
+		tokens = []
+		for token in ['127.0.0.1/8', '::1'] + admin_ignoreip() + networks:
+			if token not in tokens:
+				tokens.append(token)
+		wanted = '# Managed by x-carrier-acl-apply. Do not edit.\n[DEFAULT]\nignoreip = %s\n' % ' '.join(tokens)
+		if wanted == current:
+			return note
+		atomic_write(F2B_DROPIN, wanted, 0o644)
+	else:
+		if current is None:
+			return 'off'
+		os.unlink(F2B_DROPIN)
+		note = 'off'
+	return reload_fail2ban() or note
+
+
+def reload_fail2ban():
+	"""Reload fail2ban if it is running. Returns an error note or None."""
+	if not os.path.exists(F2B_SOCKET):
+		return None
+	client = shutil.which('fail2ban-client', path=ENV['PATH'])
+	if client is None:
+		return None
+	result = subprocess.run([client, 'reload'], capture_output=True, text=True, env=ENV, timeout=TIMEOUT)
+	if result.returncode != 0:
+		return 'fail2ban reload failed: ' + (result.stderr or result.stdout).strip()[:200]
+	return None
+
+
+# --- main -------------------------------------------------------------------------------------------------------
+
+def main(argv):
+	boot = '--boot' in argv[1:]
+	unknown = [arg for arg in argv[1:] if arg != '--boot']
+	if unknown:
+		print('usage: x-carrier-acl-apply [--boot]', file=sys.stderr)
+		return 64
+	os.makedirs(STATE_DIR, mode=0o755, exist_ok=True)
+	lock = open(LOCK, 'w')
+	fcntl.flock(lock, fcntl.LOCK_EX)
+
+	status = {'generation': None, 'backend': None, 'mode': None, 'v4': 0, 'v6': 0, 'local_v4': 0, 'local_v6': 0,
+		'snapshot_version': None, 'result': 'error', 'error': None}
+	try:
+		snapshot = parse_snapshot(read_snapshot())
+	except Refuse as error:
+		status['error'] = 'snapshot refused: %s' % error
+		write_status(status)
+		log(syslog.LOG_ERR, status['error'])
+		return 1
+	status.update({'generation': snapshot['generation'], 'mode': snapshot['mode'], 'v4': len(snapshot['v4']), 'v6': len(snapshot['v6']),
+		'local_v4': len(snapshot['lan_v4']), 'local_v6': len(snapshot['lan_v6']), 'snapshot_version': snapshot['version']})
+
+	applied = 0
+	try:
+		with open(APPLIED_GEN) as handle:
+			applied = int(handle.read().strip() or 0)
+	except (OSError, ValueError):
+		applied = 0
+	if snapshot['generation'] < applied and not boot:
+		# replay protection: an older snapshot is never re-applied by rewriting firewall.gen; status untouched
+		log(syslog.LOG_ERR, 'generation %d is older than applied generation %d; refused' % (snapshot['generation'], applied))
+		return 1
+
+	backend = detect_backend()
+	status['backend'] = backend
+	if backend is None:
+		status['result'] = 'inactive'
+		status['error'] = 'no firewall to sync (neither %s nor %s exists)' % (RULES_V4, NFT_CONF)
+		write_status(status)
+		log(syslog.LOG_WARNING, status['error'])
+		return 3
+
+	try:
+		if backend == 'iptables':
+			apply_iptables(snapshot)
+		else:
+			apply_nft(snapshot)
+		status['fail2ban'] = apply_fail2ban(snapshot)
+	except (Refuse, OSError, subprocess.SubprocessError) as error:
+		status['error'] = str(error)
+		write_status(status)
+		log(syslog.LOG_ERR, 'generation %d failed on %s: %s' % (snapshot['generation'], backend, error))
+		return 1
+
+	atomic_write(APPLIED_GEN, '%d\n' % snapshot['generation'], 0o600)
+	status['result'] = 'ok'
+	write_status(status)
+	log(syslog.LOG_NOTICE, 'generation %d (snapshot v%d) applied on %s (mode %s, v4 %d, v6 %d, local v4 %d, local v6 %d, fail2ban %s)' % (
+		snapshot['generation'], snapshot['version'], backend, snapshot['mode'], len(snapshot['v4']), len(snapshot['v6']),
+		len(snapshot['lan_v4']), len(snapshot['lan_v6']), status['fail2ban']))
+	return 0
+
+
+if __name__ == '__main__':
+	sys.exit(main(sys.argv))

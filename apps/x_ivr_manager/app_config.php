@@ -1,0 +1,125 @@
+<?php
+
+	//application details
+		$apps[$x]['name'] = "IVR Manager";
+		$apps[$x]['uuid'] = "9106e472-e7f3-4db3-8f47-ce4290b6ca19";
+		$apps[$x]['category'] = "Switch";
+		$apps[$x]['subcategory'] = "";
+		$apps[$x]['version'] = "1.0";
+		$apps[$x]['license'] = "Mozilla Public License 1.1";
+		$apps[$x]['url'] = "http://www.fusionpbx.com";
+		$apps[$x]['description']['en-us'] = "User friendly manager for IVR menus: drag and drop option order, text to speech and browser recorded greetings, and a simple start and end schedule.";
+
+	//permission details
+		$y=0;
+		$apps[$x]['permissions'][$y]['name'] = "x_ivr_manager_view";
+		$apps[$x]['permissions'][$y]['menu']['uuid'] = "c5f9f711-d4e4-4b33-ac0f-1207361b5590";
+		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";
+		$apps[$x]['permissions'][$y]['groups'][] = "admin";
+		$y++;
+		$apps[$x]['permissions'][$y]['name'] = "x_ivr_manager_edit";
+		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";
+		$apps[$x]['permissions'][$y]['groups'][] = "admin";
+		$y++;
+		$apps[$x]['permissions'][$y]['name'] = "x_ivr_manager_record";
+		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";
+		$apps[$x]['permissions'][$y]['groups'][] = "admin";
+		$y++;
+		$apps[$x]['permissions'][$y]['name'] = "x_ivr_manager_tts";
+		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";
+		$apps[$x]['permissions'][$y]['groups'][] = "admin";
+		$y++;
+		$apps[$x]['permissions'][$y]['name'] = "x_ivr_manager_schedule";
+		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";
+		$apps[$x]['permissions'][$y]['groups'][] = "admin";
+
+	//default settings
+		$y=0;
+		$apps[$x]['default_settings'][$y]['default_setting_uuid'] = "1cbc7d64-d1a4-427d-9eb9-5f2aca5dda29";
+		$apps[$x]['default_settings'][$y]['default_setting_category'] = "x_ivr_manager";
+		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "recording_sample_rate";
+		$apps[$x]['default_settings'][$y]['default_setting_name'] = "numeric";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "8000";
+		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
+		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Sample rate of browser recorded greetings, 8000 or 16000. Audio is stored as mono 16 bit PCM WAV.";
+		$y++;
+		$apps[$x]['default_settings'][$y]['default_setting_uuid'] = "c4798962-0823-47e5-aa58-44cd4b223e82";
+		$apps[$x]['default_settings'][$y]['default_setting_category'] = "x_ivr_manager";
+		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "recording_max_size";
+		$apps[$x]['default_settings'][$y]['default_setting_name'] = "numeric";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "10485760";
+		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
+		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Maximum size in bytes of a browser recording upload.";
+		$y++;
+		$apps[$x]['default_settings'][$y]['default_setting_uuid'] = "ced0933d-ca3c-4487-8c63-b5c6b2a894d5";
+		$apps[$x]['default_settings'][$y]['default_setting_category'] = "x_ivr_manager";
+		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "recording_max_seconds";
+		$apps[$x]['default_settings'][$y]['default_setting_name'] = "numeric";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "300";
+		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
+		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Maximum length in seconds of a browser recording, longer audio is truncated.";
+
+	//schema details
+		$y=0;
+		$apps[$x]['db'][$y]['table']['name'] = "v_x_ivr_manager_schedules";
+		$apps[$x]['db'][$y]['table']['parent'] = "";
+		$z=0;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "x_ivr_manager_schedule_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = "char(36)";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['type'] = "primary";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "domain_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = "char(36)";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['type'] = "foreign";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['reference']['table'] = "v_domains";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['reference']['field'] = "domain_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "ivr_menu_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = "char(36)";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['type'] = "foreign";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['reference']['table'] = "v_ivr_menus";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['reference']['field'] = "ivr_menu_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "The IVR menu the schedule routes to.";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "dialplan_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = "char(36)";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['type'] = "foreign";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['reference']['table'] = "v_dialplans";
+		$apps[$x]['db'][$y]['fields'][$z]['key']['reference']['field'] = "dialplan_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "The time condition (dialplan) that implements the schedule.";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "insert_date";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = 'timestamptz';
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = 'date';
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = 'date';
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "insert_user";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = "char(36)";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "update_date";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = 'timestamptz';
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = 'date';
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = 'date';
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "update_user";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = "char(36)";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "";
+
+?>

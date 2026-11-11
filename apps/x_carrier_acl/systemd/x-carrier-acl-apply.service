@@ -1,0 +1,43 @@
+[Unit]
+Description=Apply carrier ACL firewall set from validated snapshot
+After=netfilter-persistent.service nftables.service systemd-tmpfiles-setup.service
+Before=fail2ban.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/x-carrier-acl-apply
+;exit 3 = no supported firewall backend: recorded as "inactive" in status.json, not a unit failure
+SuccessExitStatus=3
+StateDirectory=x_carrier_acl/state
+StateDirectoryMode=0755
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=no
+ProtectSystem=strict
+;"-": fail2ban or iptables-persistent may be absent. /run/xtables.lock is pre-created by
+;/etc/tmpfiles.d/x_carrier_acl.conf so iptables-legacy can take its lock under ProtectSystem=strict.
+ReadWritePaths=-/etc/fail2ban/jail.d -/etc/iptables -/run/xtables.lock
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+PrivateDevices=yes
+;iptables-legacy programs the kernel through setsockopt on raw AF_INET/AF_INET6 sockets (not netlink), so those
+;families are needed; IPAddressDeny=any still stops any packet from being sent or received
+RestrictAddressFamilies=AF_NETLINK AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+;CAP_DAC_READ_SEARCH: read the www-data owned 0750 export directory and 0640 snapshot
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH
+SystemCallFilter=@system-service @network-io
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

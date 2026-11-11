@@ -1,0 +1,9 @@
+[Unit]
+Description=Start the carrier ACL worker on request
+
+[Path]
+PathExists=/var/lib/x_carrier_acl/export/run.request
+Unit=x-carrier-acl-worker.service
+
+[Install]
+WantedBy=multi-user.target

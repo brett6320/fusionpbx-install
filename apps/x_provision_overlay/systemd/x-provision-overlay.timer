@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily rebuild of the merged FusionPBX provision template tree (catches git pulls, domain renames and deletes)
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+Unit=x-provision-overlay.service
+
+[Install]
+WantedBy=timers.target

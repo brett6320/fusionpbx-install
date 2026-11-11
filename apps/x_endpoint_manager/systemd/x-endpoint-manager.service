@@ -1,0 +1,31 @@
+[Unit]
+Description=FusionPBX Endpoint Manager worker (scheduled and queued endpoint reboots)
+Wants=network-online.target
+After=network-online.target postgresql.service freeswitch.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/fusionpbx
+ExecStart=/usr/bin/php /var/www/fusionpbx/app/x_endpoint_manager/resources/worker.php
+RuntimeDirectory=x-endpoint-manager
+RuntimeDirectoryMode=0750
+TimeoutStartSec=55s
+Nice=5
+
+;hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+;the worker only needs its runtime directory (lock file, created by RuntimeDirectory) and /tmp (private);
+;database and event socket access is over sockets, and FusionPBX config and code are read only
+ReadWritePaths=/run/x-endpoint-manager -/var/cache/fusionpbx

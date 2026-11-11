@@ -1,0 +1,29 @@
+[Unit]
+Description=Rebuild the merged FusionPBX provision template tree (x_provision_overlay)
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/fusionpbx
+ExecStart=/usr/bin/php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/build.php --build
+TimeoutStartSec=10min
+Nice=10
+
+;hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+;the build writes only the overlay state (merged builds, lock); the upstream search path link in
+;/usr/share/fusionpbx/templates is not changed by a build; database access is over sockets
+ReadWritePaths=/var/lib/fusionpbx/provision_overlay -/var/cache/fusionpbx

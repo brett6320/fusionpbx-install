@@ -1,0 +1,9 @@
+[Unit]
+Description=Apply carrier ACL firewall set when the snapshot generation changes
+
+[Path]
+PathChanged=/var/lib/x_carrier_acl/export/firewall.gen
+Unit=x-carrier-acl-apply.service
+
+[Install]
+WantedBy=multi-user.target

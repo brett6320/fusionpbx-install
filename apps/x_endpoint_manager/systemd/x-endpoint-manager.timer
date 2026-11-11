@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the FusionPBX Endpoint Manager worker every minute
+
+[Timer]
+OnCalendar=*-*-* *:*:00
+AccuracySec=1s
+;do not catch up on runs missed while the server was down; the worker's grace window handles missed schedules
+Persistent=false
+Unit=x-endpoint-manager.service
+
+[Install]
+WantedBy=timers.target

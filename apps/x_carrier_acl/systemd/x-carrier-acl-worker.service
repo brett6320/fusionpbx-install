@@ -1,0 +1,46 @@
+[Unit]
+Description=Carrier ACL feed worker (fetch, validate, write DB)
+After=network-online.target postgresql.service freeswitch.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/fusionpbx
+ExecStart=/usr/bin/php /var/www/fusionpbx/app/x_carrier_acl/resources/cli/x_carrier_acl_worker.php
+RuntimeDirectory=x_carrier_acl
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=x_carrier_acl/export
+StateDirectoryMode=0750
+UMask=0027
+TimeoutStartSec=300
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+;"-" so a missing /var/run/fusionpbx (tmpfs, recreated by upstream) does not stop the unit from starting
+ReadWritePaths=/var/cache/fusionpbx -/var/run/fusionpbx
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+PrivateDevices=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallArchitectures=native
+;SSRF containment: no private, link-local or multicast destinations. A private non-loopback database, event socket
+;or DNS server is allowed by the drop-in x-carrier-acl-worker.service.d/10-db-host.conf written by the installer.
+IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/10 fc00::/7 fe80::/10 multicast
+IPAddressAllow=127.0.0.0/8 ::1
+;MemoryDenyWriteExecute is deliberately omitted: PHP opcache JIT may be enabled
