@@ -12,7 +12,10 @@ require_root() {
 }
 
 require_debian() {
-	command -v lsb_release >/dev/null 2>&1 || apt-get install -y lsb-release
+	if ! command -v lsb_release >/dev/null 2>&1; then
+		apt-get update || die "apt-get update failed."
+		apt-get install -y lsb-release || die "Cannot install lsb-release."
+	fi
 	local os codename
 	os=$(lsb_release -is)
 	codename=$(lsb_release -cs)
@@ -21,6 +24,18 @@ require_debian() {
 		bookworm|trixie) ;;
 		*) die "Unsupported Debian release: $codename (need bookworm or trixie)." ;;
 	esac
+}
+
+# Start a unit that is not active, once (clearing a "start request repeated too quickly" failure), and
+# report whether it is active. Upstream restarts php-fpm before /etc/fusionpbx exists in some paths, which
+# its own ReadWritePaths drop-in makes fatal until the directory appears.
+ensure_active() {
+	systemctl is-active --quiet "$1" && return 0
+	warn "$1 is not running; starting it once."
+	systemctl reset-failed "$1" 2>/dev/null || true
+	systemctl start "$1" 2>/dev/null || true
+	sleep 2
+	systemctl is-active --quiet "$1"
 }
 
 # Run a FusionPBX upgrade.php step from the FusionPBX root, as upstream does.
