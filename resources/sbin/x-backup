@@ -1,0 +1,183 @@
+#!/bin/bash
+# Back up this FusionPBX host: the database, FreeSWITCH config and data, and our app data.
+# Installed by resources/backup.sh as /usr/local/sbin/x-backup and run nightly by x-backup.timer.
+# Restore with restore.sh in the installer checkout.
+#
+# A bundle is one directory, <backup_dir>/<UTC timestamp>/, root 0700:
+#   manifest         key=value: versions, encoding, carrier key ids (ids only, never key material), domains
+#   database.dump    pg_dump -Fc of the fusionpbx database
+#   files.tar.gz     FreeSWITCH config, storage, recordings, custom music, /var/lib/fusionpbx
+#   SHA256SUMS       checksums of the three files above
+#
+# The bundle holds secrets (gateway passwords, provisioning credentials, the event socket password, TLS
+# keys). Carrier credential master keys are not in it: they stay in /var/backups/x_carriers-keys so that
+# a database copy shipped off-box cannot decrypt the carrier store on its own.
+#
+# Usage: x-backup [--dir DIR] [--no-prune] [--no-offsite] [--lock-held] [--skip-if-busy]
+#   --dir DIR        write the bundle under DIR instead of backup_dir
+#   --no-prune       keep bundles older than the retention period
+#   --no-offsite     do not run backup_offsite_cmd
+#   --lock-held      the caller (restore.sh) already holds the backup lock
+#   --skip-if-busy   exit 0 when a backup or restore is running (the timer uses this)
+set -euo pipefail
+umask 077
+export LC_ALL=C
+
+#defaults; resources/backup.sh writes the configured values to /etc/default/x-backup
+backup_dir=/var/backups/x-install
+backup_retention_days=14
+backup_min_free_percent=15
+backup_offsite_cmd=""
+layer_commit=unknown
+# shellcheck disable=SC1091  # written by resources/backup.sh
+[ -r /etc/default/x-backup ] && . /etc/default/x-backup
+
+fusionpbx_dir=/var/www/fusionpbx
+lock_file=/run/lock/x-backup.lock
+
+info() { printf '[x-backup] %s\n' "$*"; }
+warn() { printf '[x-backup] warning: %s\n' "$*" >&2; }
+die()  { printf '[x-backup] error: %s\n' "$*" >&2; exit 1; }
+
+out_root=$backup_dir
+prune=true
+offsite=true
+lock_held=false
+skip_if_busy=false
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--dir) [ $# -ge 2 ] || die "--dir needs a directory."; out_root=$2; shift ;;
+		--no-prune) prune=false ;;
+		--no-offsite) offsite=false ;;
+		--lock-held) lock_held=true ;;
+		--skip-if-busy) skip_if_busy=true ;;
+		*) die "Usage: $0 [--dir DIR] [--no-prune] [--no-offsite] [--lock-held] [--skip-if-busy]" ;;
+	esac
+	shift
+done
+
+[ "$(id -u)" -eq 0 ] || die "Run as root."
+case "$out_root" in
+	/*) ;;
+	*) die "Backup directory must be an absolute path: $out_root" ;;
+esac
+
+#one backup or restore at a time
+if [ "$lock_held" = false ]; then
+	exec 9>"$lock_file"
+	if ! flock -n 9; then
+		[ "$skip_if_busy" = true ] && { info "Another backup or restore is running; skipped."; exit 0; }
+		die "Another backup or restore is running."
+	fi
+fi
+
+psql_q() { (cd / && runuser -u postgres -- psql -d fusionpbx -qtAX -v ON_ERROR_STOP=1 -c "$1"); }
+
+#paths relative to /, and what inside them is derived or stock and therefore skipped
+paths=(etc/freeswitch var/lib/freeswitch/storage var/lib/freeswitch/recordings usr/share/freeswitch/sounds/music var/lib/fusionpbx)
+excludes=(usr/share/freeswitch/sounds/music/default var/lib/fusionpbx/provision_overlay/merged)
+present=()
+for path in "${paths[@]}"; do
+	[ -d "/$path" ] && present+=("$path")
+done
+
+install -d -o root -g root -m 0700 "$out_root"
+
+#a run killed part way (e.g. upgrade.sh stopping x-* services) leaves a .partial; we hold the lock, so any is stale
+find "$out_root" -mindepth 1 -maxdepth 1 -type d -name '*.partial' -exec rm -rf {} +
+
+#free space: refuse rather than fill the volume the PBX runs on
+db_bytes=$(psql_q "select pg_database_size('fusionpbx')")
+exclude_args=()
+for path in "${excludes[@]}"; do
+	exclude_args+=(--exclude="/$path")
+done
+file_bytes=0
+if [ "${#present[@]}" -gt 0 ]; then
+	file_bytes=$(cd / && du -sbc "${exclude_args[@]}" "${present[@]/#//}" | tail -n 1 | cut -f1)
+fi
+need=$((db_bytes + file_bytes))
+read -r fs_size fs_avail < <(df -B1 --output=size,avail "$out_root" | tail -n 1)
+reserve=$((fs_size * backup_min_free_percent / 100))
+if [ $((fs_avail - need)) -lt "$reserve" ]; then
+	die "Not enough space in $out_root: need up to $need bytes and keep $backup_min_free_percent% free, $fs_avail available. Lower backup_retention_days or move backup_dir."
+fi
+
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+work="$out_root/$stamp.partial"
+final="$out_root/$stamp"
+[ -e "$final" ] && die "$final already exists."
+install -d -o root -g root -m 0700 "$work"
+
+info "Dumping the database"
+#pg_dump runs as postgres but writes through our shell, so the bundle stays root-only
+(cd / && runuser -u postgres -- pg_dump -Fc fusionpbx) > "$work/database.dump"
+
+info "Archiving files"
+tar_rc=0
+#hard links are stored as copies: restore refuses link members
+tar -C / --create --gzip --file "$work/files.tar.gz" --hard-dereference --warning=no-file-changed --warning=no-file-removed \
+	"${excludes[@]/#/--exclude=}" "${present[@]}" || tar_rc=$?
+#1 means a file changed while it was read (a live recording); anything else is a failure
+[ "$tar_rc" -le 1 ] || die "tar failed (exit $tar_rc)."
+#fail now, not at restore time, if restore.sh would refuse the archive
+/usr/local/sbin/x-backup-check "$work/files.tar.gz" >/dev/null || die "The archive does not pass x-backup-check; see above."
+
+#manifest: ids of every carrier key the database needs, so restore can refuse before touching anything
+key_dir=""
+if [ -r /etc/fusionpbx/config.conf ]; then
+	key_dir=$(sed -n 's/^[[:space:]]*x_carriers\.key_dir[[:space:]]*=[[:space:]]*//p' /etc/fusionpbx/config.conf | tail -n 1 | tr -d "\"'" | sed 's/[[:space:]]*$//')
+fi
+key_dir=${key_dir%/}
+key_dir=${key_dir:-/etc/fusionpbx/x_carriers/keys}
+active_key_id=""
+if [ -L "$key_dir/active" ]; then
+	active_key_id=$(basename "$(readlink "$key_dir/active")" .key)
+fi
+key_ids=""
+if [ "$(psql_q "select to_regclass('public.v_x_carrier_credentials') is not null")" = t ]; then
+	key_ids=$(psql_q "select coalesce(string_agg(distinct split_part(x_carrier_credential_secret, ':', 2), ',' order by split_part(x_carrier_credential_secret, ':', 2)), '') from v_x_carrier_credentials where x_carrier_credential_secret like 'v1:%'")
+fi
+IFS='|' read -r db_encoding db_collate db_ctype < <(psql_q "select pg_encoding_to_char(encoding), datcollate, datctype from pg_database where datname = 'fusionpbx'")
+fusionpbx_commit=$(git -c safe.directory="$fusionpbx_dir" -C "$fusionpbx_dir" rev-parse HEAD)
+postgres_major=$(( $(psql_q "show server_version_num") / 10000 ))
+domains=$(psql_q "select coalesce(string_agg(domain_name, ',' order by domain_name), '') from v_domains")
+
+cat > "$work/manifest" <<EOF
+format=1
+created=$stamp
+hostname=$(hostname -f 2>/dev/null || hostname)
+fusionpbx_commit=$fusionpbx_commit
+layer_commit=$layer_commit
+postgres_major=$postgres_major
+database_encoding=$db_encoding
+database_collate=$db_collate
+database_ctype=$db_ctype
+active_key_id=$active_key_id
+key_ids=$key_ids
+domains=$domains
+EOF
+
+(cd "$work" && sha256sum manifest database.dump files.tar.gz > SHA256SUMS)
+chmod 0600 "$work"/*
+mv -T "$work" "$final"
+info "Backup written to $final"
+
+#retention: complete bundles only, and never the newest; pre-restore bundles (restore.sh) age out the same way
+prune_dir() {
+	local dir=$1 newest
+	[ -d "$dir" ] || return 0
+	newest=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name '20*Z' -printf '%f\n' | sort | tail -n 1)
+	[ -n "$newest" ] || return 0
+	find "$dir" -mindepth 1 -maxdepth 1 -type d -name '20*Z' ! -name "$newest" -mtime "+$backup_retention_days" -print -exec rm -rf {} + \
+		| sed 's/^/[x-backup] pruned /'
+}
+if [ "$prune" = true ]; then
+	prune_dir "$out_root"
+	prune_dir "$out_root/pre-restore"
+fi
+
+if [ "$offsite" = true ] && [ -n "$backup_offsite_cmd" ]; then
+	info "Running backup_offsite_cmd"
+	bash -c "$backup_offsite_cmd" x-backup "$final" || die "backup_offsite_cmd failed (exit $?); the local bundle is kept."
+fi

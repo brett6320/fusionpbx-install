@@ -41,4 +41,4 @@ WantedBy=timers.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now x-freeswitch-clock-sync.timer
+enable_unit x-freeswitch-clock-sync.timer

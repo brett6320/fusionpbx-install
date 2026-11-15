@@ -1,0 +1,45 @@
+#!/usr/bin/python3 -I
+# Validate the files.tar.gz of an x-backup bundle. Used by x-backup on the bundle it just wrote (so a bundle
+# that restore.sh would refuse fails at backup time) and by restore.sh before extracting as root.
+#
+# Accepts only members under the backed-up trees, regular files, directories and symlinks; refuses absolute
+# or ".." paths, hard links, devices, and members that would be written through a symlink in the archive.
+#
+# Usage: x-backup-check <files.tar.gz>   prints the total size of the members on success; exit 1 on failure.
+
+import posixpath
+import sys
+import tarfile
+
+ALLOWED = ('etc/freeswitch', 'var/lib/freeswitch/storage', 'var/lib/freeswitch/recordings',
+	'usr/share/freeswitch/sounds/music', 'var/lib/fusionpbx')
+
+
+def main():
+	if len(sys.argv) != 2:
+		sys.exit('usage: x-backup-check <files.tar.gz>')
+	links, names, total = [], [], 0
+	try:
+		with tarfile.open(sys.argv[1], 'r:gz') as archive:
+			for member in archive:
+				name = member.name
+				if name.startswith('/') or posixpath.normpath(name) != name.rstrip('/') or '..' in name.split('/'):
+					sys.exit('unsafe path in archive: %r' % name)
+				if not any(name == a or name.startswith(a + '/') for a in ALLOWED):
+					sys.exit('unexpected path in archive: %r' % name)
+				if member.islnk() or not (member.isreg() or member.isdir() or member.issym()):
+					sys.exit('unsupported member type in archive: %r' % name)
+				if member.issym():
+					links.append(name)
+				names.append(name)
+				total += member.size
+	except (OSError, tarfile.TarError, EOFError) as error:
+		sys.exit('cannot read archive: %s' % error)
+	for link in links:
+		if any(n.startswith(link + '/') for n in names):
+			sys.exit('archive writes through a symlink: %r' % link)
+	print(total)
+
+
+if __name__ == '__main__':
+	main()

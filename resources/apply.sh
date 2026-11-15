@@ -60,6 +60,7 @@ done
 [ "$units_changed" = true ] && systemctl daemon-reload
 
 bash resources/timesync.sh
+bash resources/backup.sh
 
 info "Updating FusionPBX schema, defaults and permissions"
 fusionpbx_upgrade --schema
@@ -80,7 +81,7 @@ fi
 #enable timers and path units after the schema exists so the first run has its tables
 for unit in apps/x_*/systemd/*.timer apps/x_*/systemd/*.path; do
 	[ -f "$unit" ] || continue
-	systemctl enable --now "$(basename "$unit")"
+	enable_unit "$(basename "$unit")"
 done
 
 info "Layer applied ($mode)"
