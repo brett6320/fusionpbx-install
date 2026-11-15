@@ -2,20 +2,46 @@
 # Move FusionPBX core to the pinned release in config.sh and reapply our layer.
 #
 # Usage: ./upgrade.sh [--restore-menu]
+#        ./upgrade.sh --optional
 #   --restore-menu  Rebuild the default menu. Needed when an upgrade adds menu
 #                   entries; resets any admin menu edits.
+#   --optional      Only update the optional upstream apps (speech, transcribe, ...),
+#                   which track their own branches, as www-data; core stays put.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./config.sh
 . ./resources/common.sh
 
 case "${1:-}" in
-	""|--restore-menu) ;;
-	*) die "Usage: $0 [--restore-menu]" ;;
+	""|--restore-menu|--optional) ;;
+	*) die "Usage: $0 [--restore-menu] | --optional" ;;
 esac
 
 require_root
 require_debian
+
+#optional upstream apps are separate git checkouts under app/, owned by www-data; git refuses to work in
+#them as another user, and running it as root would leave root-owned files behind
+if [ "${1:-}" = --optional ]; then
+	[ -f "$fusionpbx_dir/core/upgrade/upgrade.php" ] || die "FusionPBX not found at $fusionpbx_dir."
+	info "Updating optional upstream apps"
+	for git_dir in "$fusionpbx_dir"/app/*/.git; do
+		[ -d "$git_dir" ] || continue
+		chown -R www-data:www-data "$(dirname "$git_dir")"
+	done
+	#upgrade.php reports a failed pull in its output but always exits 0
+	out=$( (cd "$fusionpbx_dir" && runuser -u www-data -- php core/upgrade/upgrade.php --optional) 2>&1 ) || true
+	printf '%s\n' "$out"
+	if grep -qE 'ERROR:|fatal:|dubious ownership|Permission denied' <<<"$out"; then
+		die "An optional app did not update (see above). Nothing else was changed."
+	fi
+	fusionpbx_upgrade --schema
+	fusionpbx_upgrade --defaults
+	fusionpbx_upgrade --permissions
+	systemctl restart "php${php_version}-fpm"
+	info "Optional apps updated."
+	exit 0
+fi
 
 [ -d "$fusionpbx_dir/.git" ] || die "$fusionpbx_dir is not a git checkout."
 
@@ -62,4 +88,4 @@ info "Restarting services"
 fusionpbx_upgrade --services
 systemctl restart "php${php_version}-fpm" nginx
 
-info "Upgrade complete. Optional upstream apps (speech, sip_trunks, ...) track their own branches; update them with: cd $fusionpbx_dir && php core/upgrade/upgrade.php --optional"
+info "Upgrade complete. Optional upstream apps (speech, transcribe, ...) track their own branches; update them with: ./upgrade.sh --optional"

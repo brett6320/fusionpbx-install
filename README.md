@@ -23,9 +23,16 @@ cd /usr/src/x-install
 - `install.sh` runs once. Upstream's installer is not re-runnable (it
   regenerates the database password and adds a second domain), so a second run
   refuses. Use `upgrade.sh` to reapply this layer.
+- Before it changes anything, `install.sh` checks that it can reach every
+  repository upstream's installer downloads from. One of them is plain HTTP, so
+  outbound TCP 80 and 443 must be open.
 - The generated admin and database passwords are in the log,
   `/root/x-install-<timestamp>.log` (mode 0600).
 - Reboot when it finishes, as upstream recommends.
+- If `install.sh` fails before upstream's installer has created the database,
+  install again on a fresh host. Reusing the host leaves upstream's state
+  behind (for example a php-fpm setting that points at a deleted
+  `/etc/fusionpbx`).
 
 ## Upgrade
 
@@ -45,7 +52,10 @@ code). It moves core off the pin, and `upgrade.sh` will then refuse to run
 until the pin catches up.
 
 Optional upstream apps track their own branches. Update them with
-`cd /var/www/fusionpbx && php core/upgrade/upgrade.php --optional`.
+`./upgrade.sh --optional`. It runs upstream's update as `www-data`, which owns
+those checkouts, and then updates the schema, defaults and permissions. Each
+app moves to the head of its own branch (core stays at the pin) and there is no
+rollback, so take a backup first (`x-backup`).
 
 ## Provisioning credentials
 
