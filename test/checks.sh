@@ -50,6 +50,10 @@ check "chrony active" systemctl is-active chrony
 check "clock sync timer enabled" systemctl is-enabled x-freeswitch-clock-sync.timer
 check "clock sync runs" systemctl start x-freeswitch-clock-sync.service
 
+#backups
+check "x-backup installed" test -x /usr/local/sbin/x-backup
+check "x-backup timer enabled" systemctl is-enabled x-backup.timer
+
 #our timers
 for timer in /usr/src/x-install/apps/x_*/systemd/*.timer; do
 	[ -f "$timer" ] || continue

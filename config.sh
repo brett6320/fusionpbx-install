@@ -29,5 +29,12 @@ application_sip_trunks=false            # Not needed: inbound-only, carrier gate
 # Features.
 timesync_interval=15                     # Minutes between FreeSWITCH clock resyncs
 
+# Nightly backups (x-backup). Restore with restore.sh; see README "Backup and restore".
+backup_dir=/var/backups/x-install
+backup_time="*-*-* 02:30:00"             # systemd OnCalendar
+backup_retention_days=14
+backup_min_free_percent=15               # refuse a backup that would leave less free space than this
+backup_offsite_cmd=""                    # run as root after each backup, bundle directory as $1 (e.g. an encrypted copy to S3)
+
 # Where the installer logs. Created mode 0600 because upstream prints passwords.
 install_log_dir=/root

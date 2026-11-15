@@ -34,6 +34,25 @@ core_git() {
 	git -c safe.directory="$fusionpbx_dir" -C "$fusionpbx_dir" "$@"
 }
 
+# Enable a unit and start it, unless X_APPLY_NO_START=1 (restore.sh --no-start).
+enable_unit() {
+	if [ "${X_APPLY_NO_START:-}" = 1 ]; then
+		systemctl enable "$1"
+	else
+		systemctl enable --now "$1"
+	fi
+}
+
+# Carrier credential key directory: config.conf x_carriers.key_dir, else the default.
+carrier_key_dir() {
+	local dir=""
+	if [ -r /etc/fusionpbx/config.conf ]; then
+		dir=$(sed -n 's/^[[:space:]]*x_carriers\.key_dir[[:space:]]*=[[:space:]]*//p' /etc/fusionpbx/config.conf | tail -n 1 | tr -d "\"'" | sed 's/[[:space:]]*$//')
+	fi
+	dir=${dir%/}
+	printf '%s\n' "${dir:-/etc/fusionpbx/x_carriers/keys}"
+}
+
 # Replace or append key=value in a shell config file.
 set_config_value() {
 	local file=$1 key=$2 value=$3

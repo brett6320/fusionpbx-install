@@ -91,11 +91,99 @@ keys, the stored credentials cannot be recovered.
 ```sh
 test/lint.sh                    # shellcheck, php -l, python syntax (needs Docker)
 test/install-test.sh [bookworm|trixie] [--keep]  # full install + upgrade in a systemd container
+## Backup and restore
+
+`x-backup` runs nightly (`x-backup.timer`, settings in `config.sh`) and writes
+one bundle per run to `/var/backups/x-install/<timestamp>/`. A bundle has:
+
+- the whole `fusionpbx` database;
+- `/etc/freeswitch`, FreeSWITCH storage (voicemail, fax) and recordings;
+- custom music on hold;
+- `/var/lib/fusionpbx` (provision overlay files, fax logos);
+- a manifest and checksums.
+
+Bundles older than `backup_retention_days` are removed, but never the newest
+one. Run `x-backup` by hand at any time.
+
+Not in a bundle:
+
+- The carrier credential keys. They stay in `/var/backups/x_carriers-keys`, so
+  a bundle copied off the host cannot decrypt the carrier store on its own.
+- `/etc/fusionpbx/config.conf`. If you changed it by hand (for example
+  `x_carriers.key_dir` or event socket settings), keep your own copy.
+- Firewall state. It is rebuilt from the database.
+
+**Bundles contain secrets**: gateway passwords, provisioning credentials,
+password hashes, the event socket password and TLS private keys. Keep them
+root-only, and encrypt any copy that leaves the host.
+
+**Bundles stay on the host by default.** That does not protect you from losing
+the host. Set `backup_offsite_cmd` to copy each bundle somewhere else (it gets
+the bundle directory as `$1`), and copy `/var/backups/x_carriers-keys`
+separately. On AWS, daily EBS snapshots (AWS Backup) are the fastest way back
+from host loss. Use bundles for moving to another host and for restoring
+selected data.
+
+### Restore
+
+```sh
+cd /usr/src/x-install
+./restore.sh /var/backups/x-install/<timestamp>
+```
+
+`restore.sh` checks the following before it changes anything:
+
+- the checksums;
+- that the bundle is not from a newer FusionPBX, installer or PostgreSQL than
+  this host;
+- that every carrier key the bundle's database needs is present (from
+  `--keys DIR`, default `/var/backups/x_carriers-keys`);
+- that the archive only contains the expected paths;
+- that there is enough disk space.
+
+Then it backs up the current state to `/var/backups/x-install/pre-restore/`
+and stops services. It restores the database into a side database and swaps
+it in. The old database is kept as `fusionpbx_pre_restore_<timestamp>`. Last,
+it restores files and keys, reapplies this layer (which migrates an older
+schema forward) and starts services.
+
+If it fails before the swap, the host is unchanged and services restart. If it
+fails after the swap, services stay stopped and it prints the rollback
+commands. Logs go to `/root/x-restore-<timestamp>.log`. A restore can take a
+long time, so run it inside `tmux` or `screen`. Pre-restore bundles age out
+with `backup_retention_days`, like the nightly ones.
+
+After a restore, the admin, provisioning and database-backed credentials are
+the ones from the bundle. The passwords that `install.sh` printed on this host
+no longer work.
+
+**Restoring onto a new host** (after host loss):
+
+1. Give the new host the old host's name. If phones use an IP address domain
+   (`domain_name=ip_address`), also move the old address or Elastic IP to it.
+   `restore.sh` refuses an IP address domain that is not on the host unless you
+   pass `--accept-domain-mismatch`. In that case, rename the domain in
+   Advanced > Domains afterwards. For production, use a DNS name as the domain.
+2. Run `./install.sh` with the same `config.sh`. `install.sh` refuses to start
+   if upstream has moved past `fusionpbx_commit`. If it has, set
+   `fusionpbx_commit` to the new head, then install.
+3. Copy the bundle and the key backup over, then restore:
+   `./restore.sh <bundle> --keys <key dir> --no-pre-backup`.
+
+**Drills and migrations while the old host still runs:** pass `--no-start`.
+Otherwise the restored gateways register with the same carrier credentials
+and take the registrations away from the old host, and the email and fax
+queues start sending. `--no-start` stops and disables FreeSWITCH, the FusionPBX
+services and our timers, so a reboot does not start them either. To go live,
+turn the old host off, run `systemctl enable --now freeswitch`, then run
+`./upgrade.sh`.
+
 ```
 
 ## Known limitations
 
 - IVR schedules use upstream's time condition handling, including its time
+test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on a fresh host and in place
   zone behavior. They have not been tested with real calls.
 - Rebooting an endpoint reboots every phone that shares its extension.
 - The provision overlay cannot stop one tenant from reading another tenant's
