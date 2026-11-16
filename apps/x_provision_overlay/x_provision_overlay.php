@@ -122,7 +122,7 @@
 		echo "<div class='card'>\n";
 		echo "<b>".$text['header-new_file']."</b><br><br>\n";
 		echo $text['description-new_file']."<br><br>\n";
-		echo "<form method='get' action='x_provision_overlay_edit.php'>\n";
+		echo "<form id='form_new_file' method='get' action='x_provision_overlay_edit.php'>\n";
 		echo "<input type='hidden' name='new' value='1'>\n";
 		echo "<select class='formfld' name='scope'>\n";
 		if ($can_edit_domain) {
@@ -132,11 +132,64 @@
 			echo "	<option value='global'>".$text['option-scope_global']."</option>\n";
 		}
 		echo "</select>\n";
-		echo "<input class='formfld' type='text' name='vendor' maxlength='64' placeholder='".escape($text['label-vendor'])."' pattern='[A-Za-z0-9._{}$-]{1,64}' required='required' style='width: 140px;'>\n";
-		echo "<input class='formfld' type='text' name='model' maxlength='64' placeholder='".escape($text['label-model'])."' pattern='[A-Za-z0-9._{}$-]{1,64}' required='required' style='width: 140px;'>\n";
-		echo "<input class='formfld' type='text' name='file' maxlength='64' placeholder='".escape($text['label-file'])."' pattern='[A-Za-z0-9._{}$-]{1,64}' required='required' style='width: 180px;'>\n";
+		echo "<input class='formfld' type='text' name='vendor' list='x_provision_overlay_vendors' autocomplete='off' maxlength='64' placeholder='".escape($text['label-vendor'])."' pattern='[A-Za-z0-9._{}$-]{1,64}' required='required' style='width: 140px;'>\n";
+		echo "<input class='formfld' type='text' name='model' list='x_provision_overlay_models' autocomplete='off' maxlength='64' placeholder='".escape($text['label-model'])."' pattern='[A-Za-z0-9._{}$-]{1,64}' required='required' style='width: 140px;'>\n";
+		echo "<input class='formfld' type='text' name='file' list='x_provision_overlay_files' autocomplete='off' maxlength='64' placeholder='".escape($text['label-file'])."' pattern='[A-Za-z0-9._{}$-]{1,64}' required='required' style='width: 180px;'>\n";
 		echo button::create(['type'=>'submit','label'=>$text['button-open_editor'],'icon'=>$settings->get('theme', 'button_icon_add')]);
+		//template vendors, plus Device Vendors that have no template yet (a new template's vendor must be one)
+		$vendor_names = array_map('strval', array_keys($vendors));
+		foreach (array_keys($device_vendors) as $vendor) {
+			if (provision_overlay::valid_name((string)$vendor)) {
+				$vendor_names[] = (string)$vendor;
+			}
+		}
+		$vendor_names = array_unique($vendor_names);
+		sort($vendor_names, SORT_STRING);
+		echo "<datalist id='x_provision_overlay_vendors'>\n";
+		foreach ($vendor_names as $vendor) {
+			echo "	<option value='".escape($vendor)."'>\n";
+		}
+		echo "</datalist>\n";
+		echo "<datalist id='x_provision_overlay_models'></datalist>\n";
+		echo "<datalist id='x_provision_overlay_files'></datalist>\n";
 		echo "</form>\n";
+
+		//suggestions only: free text stays allowed so new templates and files can be created
+		$known = [];
+		foreach ($index as $t => $row) {
+			[$vendor, $model] = explode('/', $t, 2);
+			$known[$vendor][$model] = array_map('strval', array_keys($row['files']));
+		}
+		//numeric model names must stay object keys in JSON, not become a list
+		$known = array_map(function ($models) { return (object)$models; }, $known);
+		echo "<script>\n";
+		echo "(function () {\n";
+		echo "	var known = ".json_encode((object)$known, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT).";\n";
+		echo "	var form = document.getElementById('form_new_file');\n";
+		echo "	function fill(id, values) {\n";
+		echo "		var list = document.getElementById(id);\n";
+		echo "		list.textContent = '';\n";
+		echo "		values.sort().forEach(function (value) {\n";
+		echo "			var option = document.createElement('option');\n";
+		echo "			option.value = value;\n";
+		echo "			list.appendChild(option);\n";
+		echo "		});\n";
+		echo "	}\n";
+		echo "	function update() {\n";
+		echo "		var models = Object.prototype.hasOwnProperty.call(known, form.elements['vendor'].value) ? known[form.elements['vendor'].value] : {};\n";
+		echo "		fill('x_provision_overlay_models', Object.keys(models));\n";
+		echo "		//files of the model, or of every model of the vendor while the model is not a known one\n";
+		echo "		var model = form.elements['model'].value;\n";
+		echo "		var names = Object.prototype.hasOwnProperty.call(models, model) ? [models[model]] : Object.keys(models).map(function (m) { return models[m]; });\n";
+		echo "		var files = {};\n";
+		echo "		names.forEach(function (list) { list.forEach(function (file) { files[file] = true; }); });\n";
+		echo "		fill('x_provision_overlay_files', Object.keys(files));\n";
+		echo "	}\n";
+		echo "	form.elements['vendor'].addEventListener('input', update);\n";
+		echo "	form.elements['model'].addEventListener('input', update);\n";
+		echo "	update();\n";
+		echo "})();\n";
+		echo "</script>\n";
 		echo "</div>\n";
 		echo "<br />\n";
 	}
