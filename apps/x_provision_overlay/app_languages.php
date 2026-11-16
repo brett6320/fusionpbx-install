@@ -16,7 +16,7 @@ $text['header-verify']['en-us'] = "Verify";
 
 $text['description-x_provision_overlay']['en-us'] = "Override provisioning template files for all domains (global) or for this domain only, without changing the upstream templates. Files that are not overridden keep receiving upstream updates.";
 $text['description-x_provision_overlay_assets']['en-us'] = "Logos and wallpapers for the phones of this domain. Phones download them from the URL shown; use the URL in a vendor setting or in a template override.";
-$text['description-new_file']['en-us'] = "Open the editor for a vendor, model and file name. A template that does not exist upstream is created as a new template; its vendor must exist under Device Vendors.";
+$text['description-new_file']['en-us'] = "Open the editor for a vendor, model and file name. Start typing to pick an existing one. A template that does not exist upstream is created as a new template; its vendor must exist under Device Vendors.";
 $text['description-code_execution']['en-us'] = "Templates are executed by the template engine on the server. Only trusted administrators should be allowed to edit them.";
 $text['description-asset_file']['en-us'] = "PNG, JPEG, BMP or GIF, up to {max} MB and 4096 x 4096 pixels. The image is re-encoded in the same format when saved. SVG is not accepted.";
 $text['description-asset_name']['en-us'] = "Optional. Lower case letters, digits, dash and underscore. The extension is set from the image type. Uploading with an existing name replaces that image.";
