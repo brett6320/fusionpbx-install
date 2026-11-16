@@ -148,7 +148,7 @@
 	$not_linked = [];
 	if (is_array($analysis)) {
 		foreach ($analysis['devices'] as $device) {
-			$template_devices[$device['template']] = ($template_devices[$device['template']] ?? 0) + 1;
+			$template_devices[$device['group']][$device['template']] = ($template_devices[$device['group']][$device['template']] ?? 0) + 1;
 			if ($device['state'] !== 'managed' && $device['state'] !== 'none') {
 				$not_linked[] = $device;
 			}
@@ -258,9 +258,9 @@
 
 		//member models, the domain's devices marked
 		$members = [];
-		foreach (array_keys($spec['members']) as $template) {
-			$count = $template_devices[$template] ?? 0;
-			$members[] = ($count > 0) ? "<b>".escape($template)." (".$count.")</b>" : escape($template);
+		foreach ($spec['members'] as $label => $member) {
+			$count = $template_devices[$group][$member['template']] ?? 0;
+			$members[] = ($count > 0) ? "<b>".escape($label)." (".$count.")</b>" : escape($label);
 		}
 		echo $text['label-wallpaper_models'].": ".implode(', ', $members)."<br />\n";
 		if (is_array($analysis)) {

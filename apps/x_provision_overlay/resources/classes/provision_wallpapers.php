@@ -81,6 +81,8 @@ class provision_wallpapers {
 		Upstream mix-ups are kept: t73w/t74w read yealink_t54w_*, t58a t56a, cp925 cp920, ax86r ax83h,
 		D865 d862; ax83h/ax86r test yealink_t44w_wallpaper_filename but print the ax83h one; J179 tests
 		avaya_j179_wallpaper.
+		models models of a shared template that take another group (matched against the device model or the
+		       user agent the phone reported); each device gets its own value of the same variables
 	*/
 	const catalog = [
 		//320x240
@@ -95,6 +97,7 @@ class provision_wallpapers {
 		'snom/D765' => ['group' => '320x240', 'format' => 'png', 'limit' => 512000, 'vars' => ['snom_wallpaper_url_d765' => 'url'], 'reads' => ['snom_wallpaper_url']],
 		'grandstream/gxp2130' => ['group' => '320x240', 'format' => 'jpg', 'limit' => 512000, 'vars' => ['grandstream_wallpaper_url' => 'url'], 'reads' => []],
 		'grandstream/gxp2135' => ['group' => '320x240', 'format' => 'jpg', 'limit' => 512000, 'vars' => ['grandstream_wallpaper_url' => 'url'], 'reads' => []],
+		'grandstream/grp261x' => ['group' => '320x240', 'format' => 'jpg', 'limit' => 512000, 'vars' => ['grandstream_wallpaper_url' => 'url'], 'reads' => [], 'models' => ['GRP2615' => '480x272']],
 		'avaya/J139' => ['group' => '320x240', 'format' => 'jpg', 'limit' => 262144, 'vars' => ['avaya_j139_wallpaper_url' => 'url', 'avaya_j139_wallpaper_filename' => 'filename'], 'reads' => []],
 		'avaya/J179' => ['group' => '320x240', 'format' => 'jpg', 'limit' => 262144, 'vars' => ['avaya_j179_wallpaper' => 'url', 'avaya_j179_wallpaper_url' => 'url', 'avaya_j179_wallpaper_filename' => 'filename'], 'reads' => []],
 		//480x272
@@ -171,6 +174,20 @@ class provision_wallpapers {
 	//-------------------------------------------------------------------------
 
 	/**
+	 * The group of a device: its template's, unless the template is shared and the device's model takes another.
+	 * The model comes from the device model or, as phones report it, the provisioned user agent.
+	 */
+	public static function device_group(array $entry, array $device): string {
+		$haystack = ($device['device_model'] ?? '').' '.($device['device_provisioned_agent'] ?? '');
+		foreach ($entry['models'] ?? [] as $model => $group) {
+			if (preg_match('/\b'.preg_quote($model, '/').'\b/i', $haystack) === 1) {
+				return $group;
+			}
+		}
+		return $entry['group'];
+	}
+
+	/**
 	 * Every variable of a template's set (written and read).
 	 */
 	public static function set_variables(string $template): array {
@@ -198,7 +215,7 @@ class provision_wallpapers {
 	/**
 	 * Groups with their size, member templates and the formats generated (format => strictest member limit).
 	 *
-	 * @return array group => ['width' => int, 'height' => int, 'members' => [template => entry], 'formats' => [ext => limit]]
+	 * @return array group => ['width' => int, 'height' => int, 'members' => [label => entry + template], 'formats' => [ext => limit]]
 	 */
 	public static function group_specs(): array {
 		$specs = [];
@@ -207,11 +224,16 @@ class provision_wallpapers {
 		}
 		foreach (self::catalog as $template => $entry) {
 			$group = $entry['group'];
-			$specs[$group]['members'][$template] = $entry;
+			$specs[$group]['members'][$template] = $entry + ['template' => $template];
+			foreach ($entry['models'] ?? [] as $model => $model_group) {
+				$specs[$model_group]['members'][$template.' ('.$model.')'] = $entry + ['template' => $template];
+			}
 			$format = $entry['format'];
 			$limit = (int) $entry['limit'];
-			if (!isset($specs[$group]['formats'][$format]) || $limit < $specs[$group]['formats'][$format]) {
-				$specs[$group]['formats'][$format] = $limit;
+			foreach (array_unique(array_merge([$group], array_values($entry['models'] ?? []))) as $member_group) {
+				if (!isset($specs[$member_group]['formats'][$format]) || $limit < $specs[$member_group]['formats'][$format]) {
+					$specs[$member_group]['formats'][$format] = $limit;
+				}
 			}
 		}
 		foreach ($specs as $group => $spec) {
@@ -1009,7 +1031,8 @@ class provision_wallpapers {
 
 		//devices on catalog templates
 		[$in_templates, $parameters] = self::in_list('t', $templates);
-		$sql = "select device_uuid, device_address, device_label, device_template, device_profile_uuid, device_uuid_alternate, device_enabled ";
+		$sql = "select device_uuid, device_address, device_label, device_template, device_profile_uuid, device_uuid_alternate, device_enabled, ";
+		$sql .= "device_model, device_provisioned_agent ";
 		$sql .= "from v_devices ";
 		$sql .= "where domain_uuid = :domain_uuid ";
 		$sql .= "and device_template in (".$in_templates.") ";
@@ -1159,7 +1182,7 @@ class provision_wallpapers {
 		foreach ($devices as $device_uuid => $device) {
 			$template = $device['device_template'];
 			$entry = self::catalog[$template];
-			$group = $entry['group'];
+			$group = self::device_group($entry, $device);
 			$set = self::set_variables($template);
 			$sources = [];
 			$optout = false;
