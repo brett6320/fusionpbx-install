@@ -179,55 +179,47 @@ class x_ivr_manager {
 	}
 
 	/**
-	 * What still plays a recording or phrase of the domain: IVR menus (greetings, invalid and exit sounds), phrases,
-	 * ring group greetings, call center queue greetings and announcements, and dialplans that name it
+	 * What still plays a recording or phrase of the domain. A recording is found by its file name and a phrase by
+	 * its uuid, as a substring, so every stored form matches (bare name, full path, "lua streamfile.lua name",
+	 * "playback path", "phrase:uuid", "phrase uuid", dialplan data="uuid"). A similar name can refuse a delete;
+	 * nothing in use is missed in the places checked:
+	 * IVR menus and their options, phrases, ring groups, call center queues, call flows, conference centers and
+	 * dialplans of the domain.
 	 *
 	 * @param string $value recording file name, or phrase:<uuid>
-	 * @param string|null $ignore_phrase_uuid a phrase being deleted along with the recording
 	 * @return array|false what uses it (empty when unused), false when a lookup failed
 	 */
-	public function greeting_usage($value, $ignore_phrase_uuid = null) {
+	public function greeting_usage($value) {
 		$value = (string)$value;
-		$is_phrase = strpos($value, 'phrase:') === 0;
-		if ($is_phrase) {
-			$names = [$value];
+		$needle = strpos($value, 'phrase:') === 0 ? substr($value, 7) : $value;
+		if ($needle === '') {
+			return false;
 		}
-		else {
-			$names = [$value, $this->recording_path().'/'.$value, 'recordings/'.$this->domain_name.'/'.$value];
-		}
-		$in = [];
-		$parameters = ['domain_uuid' => $this->domain_uuid];
-		foreach ($names as $i => $name) {
-			$in[] = ':name_'.$i;
-			$parameters['name_'.$i] = $name;
-		}
-		$in = implode(', ', $in);
-		$like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $value).'%';
+		$like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $needle).'%';
+		$match = function(array $columns) {
+			return '('.implode(' or ', array_map(function($column) { return $column." like :like escape '!'"; }, $columns)).')';
+		};
 
+		//label, app directory (null: always installed), query
 		$checks = [];
-		$checks[] = ['IVR menu', "select ivr_menu_name from v_ivr_menus where domain_uuid = :domain_uuid and (ivr_menu_greet_long in ($in) or ivr_menu_greet_short in ($in) or ivr_menu_invalid_sound in ($in) or ivr_menu_exit_sound in ($in))", $parameters];
-		if (!$is_phrase && self::phrases_installed()) {
-			$phrase_parameters = $parameters;
-			$phrase_parameters['streamfile'] = '${lua streamfile.lua '.$value.'}';
-			$sql = "select distinct p.phrase_name from v_phrases as p, v_phrase_details as d where p.domain_uuid = :domain_uuid and d.phrase_uuid = p.phrase_uuid and d.phrase_detail_data in ($in, :streamfile)";
-			if (is_uuid($ignore_phrase_uuid)) {
-				$sql .= " and p.phrase_uuid <> :ignore_phrase_uuid";
-				$phrase_parameters['ignore_phrase_uuid'] = $ignore_phrase_uuid;
-			}
-			$checks[] = ['Phrase', $sql, $phrase_parameters];
+		$checks[] = ['IVR menu', 'ivr_menus', "select ivr_menu_name from v_ivr_menus where domain_uuid = :domain_uuid and ".$match(['ivr_menu_greet_long', 'ivr_menu_greet_short', 'ivr_menu_invalid_sound', 'ivr_menu_exit_sound', 'ivr_menu_ringback'])];
+		$checks[] = ['IVR menu option of', 'ivr_menus', "select m.ivr_menu_name from v_ivr_menu_options as o, v_ivr_menus as m where m.domain_uuid = :domain_uuid and o.ivr_menu_uuid = m.ivr_menu_uuid and ".$match(['o.ivr_menu_option_param'])];
+		if (strpos($value, 'phrase:') !== 0) {
+			$checks[] = ['Phrase', 'phrases', "select distinct p.phrase_name from v_phrases as p, v_phrase_details as d where p.domain_uuid = :domain_uuid and d.phrase_uuid = p.phrase_uuid and ".$match(['d.phrase_detail_data'])];
 		}
-		$app_path = dirname(__DIR__, 4).'/app';
-		if (file_exists($app_path.'/ring_groups/app_config.php')) {
-			$checks[] = ['Ring group', "select ring_group_name from v_ring_groups where domain_uuid = :domain_uuid and ring_group_greeting in ($in)", $parameters];
-		}
-		if (file_exists($app_path.'/call_centers/app_config.php')) {
-			$checks[] = ['Call center queue', "select queue_name from v_call_center_queues where domain_uuid = :domain_uuid and (queue_greeting in ($in) or queue_announce_sound in ($in))", $parameters];
-		}
-		$checks[] = ['Dialplan', "select dialplan_name from v_dialplans where domain_uuid = :domain_uuid and dialplan_xml like :like escape '!'", ['domain_uuid' => $this->domain_uuid, 'like' => $like]];
+		$checks[] = ['Ring group', 'ring_groups', "select ring_group_name from v_ring_groups where domain_uuid = :domain_uuid and ".$match(['ring_group_greeting', 'ring_group_ringback', 'ring_group_wait_announcement'])];
+		$checks[] = ['Call center queue', 'call_centers', "select queue_name from v_call_center_queues where domain_uuid = :domain_uuid and ".$match(['queue_greeting', 'queue_announce_sound', 'queue_moh_sound'])];
+		$checks[] = ['Call flow', 'call_flows', "select call_flow_name from v_call_flows where domain_uuid = :domain_uuid and ".$match(['call_flow_sound', 'call_flow_alternate_sound'])];
+		$checks[] = ['Conference center', 'conference_centers', "select conference_center_name from v_conference_centers where domain_uuid = :domain_uuid and ".$match(['conference_center_greeting'])];
+		$checks[] = ['Dialplan', null, "select dialplan_name from v_dialplans where domain_uuid = :domain_uuid and ".$match(['dialplan_xml'])];
 
+		$app_path = dirname(__DIR__, 4).'/app';
 		$usage = [];
-		foreach ($checks as [$label, $sql, $check_parameters]) {
-			$rows = $this->database->select($sql, $check_parameters, 'all');
+		foreach ($checks as [$label, $app, $sql]) {
+			if ($app !== null && !file_exists($app_path.'/'.$app.'/app_config.php')) {
+				continue;
+			}
+			$rows = $this->database->select($sql, ['domain_uuid' => $this->domain_uuid, 'like' => $like], 'all');
 			if ($rows === false) {
 				return false;
 			}
@@ -250,14 +242,15 @@ class x_ivr_manager {
 	}
 
 	/**
-	 * Delete a recording or phrase of the domain, only when nothing uses it. Deleting a phrase also deletes the
+	 * Delete a recording or phrase of the domain, only when nothing uses it. Deleting a phrase can also delete the
 	 * recordings created with it (description "Phrase <name>") that nothing else uses.
 	 * The caller checks recording_delete or phrase_delete.
 	 *
 	 * @param string $value recording file name, or phrase:<uuid>
+	 * @param bool $delete_recordings also delete a phrase's own recordings; the caller checked recording_delete
 	 * @return bool
 	 */
-	public function delete_greeting($value) {
+	public function delete_greeting($value, $delete_recordings = false) {
 		$this->message = null;
 		$this->usage = [];
 		$value = (string)$value;
@@ -298,10 +291,8 @@ class x_ivr_manager {
 			$array['phrase_details'][0]['phrase_uuid'] = $phrase['phrase_uuid'];
 			$array['phrase_details'][0]['domain_uuid'] = $this->domain_uuid;
 			$p = permissions::new();
-			$p->add('phrase_delete', 'temp');
 			$p->add('phrase_detail_delete', 'temp');
 			$this->database->delete($array);
-			$p->delete('phrase_delete', 'temp');
 			$p->delete('phrase_detail_delete', 'temp');
 			unset($array);
 			if ($this->get_phrase($phrase['phrase_uuid']) !== null) {
@@ -313,7 +304,7 @@ class x_ivr_manager {
 			$cache->delete('languages:'.$phrase['phrase_language'].':'.$phrase['phrase_uuid']);
 
 			//its own recordings, when nothing else plays them
-			foreach (array_unique($files) as $file) {
+			foreach ($delete_recordings ? array_unique($files) : [] as $file) {
 				$sql = "select recording_description from v_recordings where domain_uuid = :domain_uuid and recording_filename = :recording_filename ";
 				$parameters['domain_uuid'] = $this->domain_uuid;
 				$parameters['recording_filename'] = $file;
@@ -343,7 +334,8 @@ class x_ivr_manager {
 	}
 
 	/**
-	 * Delete a recording row and its file, mirrors app/recordings/resources/classes/switch_recordings.php delete()
+	 * Delete a recording row and its file, mirrors app/recordings/resources/classes/switch_recordings.php delete();
+	 * the caller checked recording_delete
 	 *
 	 * @param string $filename recording file name of the domain
 	 * @return bool
@@ -360,10 +352,7 @@ class x_ivr_manager {
 		}
 		$array['recordings'][0]['recording_uuid'] = $recording_uuid;
 		$array['recordings'][0]['domain_uuid'] = $this->domain_uuid;
-		$p = permissions::new();
-		$p->add('recording_delete', 'temp');
 		$this->database->delete($array);
-		$p->delete('recording_delete', 'temp');
 		unset($array);
 		$sql = "select count(*) from v_recordings where recording_uuid = :recording_uuid ";
 		if ((int)$this->database->select($sql, ['recording_uuid' => $recording_uuid], 'column') !== 0) {

@@ -246,7 +246,7 @@ $text['confirm-greeting_remove']['en-us'] = "Remove the greeting \"%s\" from thi
 
 $text['confirm-recording_delete']['en-us'] = "Permanently delete the recording \"%s\" and its audio file? This cannot be undone.";
 
-$text['confirm-phrase_delete']['en-us'] = "Permanently delete the phrase \"%s\"? Recordings created for it are deleted too unless something else uses them. This cannot be undone.";
+$text['confirm-phrase_delete']['en-us'] = "Permanently delete the phrase \"%s\"? Recordings created for it are deleted too when you may delete recordings and nothing else uses them. This cannot be undone.";
 
 $text['message-greeting_removed']['en-us'] = "Greeting removed from the menu.";
 

@@ -204,7 +204,7 @@
 					echo "access denied";
 					exit;
 				}
-				if ($manager->delete_greeting($greeting_value)) {
+				if ($manager->delete_greeting($greeting_value, permission_exists('recording_delete'))) {
 					message::add($text['message-greeting_deleted']);
 				}
 				else if ($manager->message === 'message-greeting_in_use') {
@@ -546,7 +546,7 @@
 			echo "	<br />".$text['description-preview_incomplete']."\n";
 		}
 		if (!empty($greetings[$type]['value']) && permission_exists('x_ivr_manager_edit')) {
-			echo "	<div style='margin-top: 5px;'>".button::create(['type'=>'button','label'=>$text['button-remove_greeting'],'icon'=>'xmark','onclick'=>"greeting_remove_confirm('".$type."', ".escape(json_encode($greetings[$type]['label'])).");"])."</div>\n";
+			echo "	<div style='margin-top: 5px;'>".button::create(['type'=>'button','label'=>$text['button-remove_greeting'],'icon'=>'xmark','onclick'=>"greeting_remove_confirm('".$type."', ".escape(json_encode($greetings[$type]['label'], JSON_INVALID_UTF8_SUBSTITUTE)).");"])."</div>\n";
 		}
 		echo "</td>\n";
 		echo "</tr>\n";
@@ -616,7 +616,13 @@
 		echo "</td>\n";
 		echo "</tr>\n";
 		echo "</table>\n";
-		echo "<input type='hidden' name='action' id='greeting_action' value='greeting_select'>\n";
+		echo "<input type='hidden' name='action' value='greeting_select'>\n";
+		echo "<input type='hidden' name='id' value='".escape($ivr_menu_uuid)."'>\n";
+		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+		echo "</form>\n";
+		echo "<form name='frm_greeting_delete' id='frm_greeting_delete' method='post'>\n";
+		echo "<input type='hidden' name='action' value='greeting_delete'>\n";
+		echo "<input type='hidden' name='greeting_value' id='greeting_delete_value' value=''>\n";
 		echo "<input type='hidden' name='id' value='".escape($ivr_menu_uuid)."'>\n";
 		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
 		echo "</form>\n";
@@ -1141,22 +1147,22 @@
 	echo "	}\n";
 	echo "	function greeting_remove_confirm(type, label) {\n";
 	echo "		document.getElementById('greeting_remove_type').value = type;\n";
-	echo "		document.getElementById('greeting_remove_message').textContent = ".json_encode($text['confirm-greeting_remove']).".replace('%s', label);\n";
+	echo "		document.getElementById('greeting_remove_message').textContent = ".json_encode($text['confirm-greeting_remove']).".replace('%s', function() { return label; });\n";
 	echo "		modal_open('modal-greeting-remove');\n";
 	echo "	}\n";
 	echo "	function greeting_delete_confirm() {\n";
 	echo "		var select = document.getElementById('greeting_value');\n";
 	echo "		var option = select.options[select.selectedIndex];\n";
 	echo "		if (!option || !option.value) { return; }\n";
-	echo "		document.getElementById('greeting_delete_message').textContent = (option.value.indexOf('phrase:') === 0 ? ".json_encode($text['confirm-phrase_delete'])." : ".json_encode($text['confirm-recording_delete']).").replace('%s', option.text);\n";
+	echo "		document.getElementById('greeting_delete_value').value = option.value;\n";
+	echo "		document.getElementById('greeting_delete_message').textContent = (option.value.indexOf('phrase:') === 0 ? ".json_encode($text['confirm-phrase_delete'])." : ".json_encode($text['confirm-recording_delete']).").replace('%s', function() { return option.text; });\n";
 	echo "		modal_open('modal-greeting-delete');\n";
 	echo "	}\n";
 	echo "	function greeting_delete_submit() {\n";
-	echo "		var form = document.getElementById('frm_greeting');\n";
-	echo "		document.getElementById('greeting_action').value = 'greeting_delete';\n";
-	echo "		form.noValidate = true;\n";
-	echo "		form.submit();\n";
+	echo "		var value = document.getElementById('greeting_delete_value').value;\n";
+	echo "		if (value) { document.getElementById('frm_greeting_delete').submit(); }\n";
 	echo "	}\n";
+	echo "	window.addEventListener('pageshow', function() { if (document.getElementById('greeting_value')) { greeting_select_changed(); } });\n";
 	echo "</script>\n";
 
 //include the footer

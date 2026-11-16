@@ -194,10 +194,12 @@ stays silent.
 phrase. **Delete** in the greeting picker deletes a recording (and its audio
 file) or a phrase for good, after a confirmation, for users with
 `recording_delete` or `phrase_delete`. It is refused while anything still uses
-it: an IVR menu (greetings, invalid and exit sounds), a phrase, a ring group or
-call center queue greeting, or a dialplan that names it; the message lists
-what. Deleting a phrase also deletes the recordings created for it, unless
-something else plays them.
+it: an IVR menu (greetings, sounds, ringback) or menu option, a phrase, a ring
+group, call center queue, call flow or conference center, or a dialplan that
+names it; the message lists what. The check matches the file name or phrase
+uuid as text, so a similarly named recording can also block a delete. Deleting
+a phrase also deletes the recordings created for it (for users with
+`recording_delete`), unless something else plays them.
 
 ### Schedule extension
 
