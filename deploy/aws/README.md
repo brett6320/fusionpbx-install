@@ -161,8 +161,11 @@ same works for `prefix-lists.yaml`, and for a customized copy of
     them (no Fail2ban whitelist). After the stack update (which gives the role
     access, and restarts the instance), add the three lines to the file by
     hand from the stack's parameters.
-- **Backups** go to the bucket in the `BackupBucketName` output. The bucket is
-  private, encrypted and versioned, and only accepts HTTPS.
+- **Backups:** the stack creates a bucket (`BackupBucketName` output). Nothing
+  uploads to it by default: set `backup_offsite_cmd` in `config.sh` to a
+  command that archives the bundle and uploads it as below. The installer
+  doesn't install the AWS CLI. The bucket is private, encrypted and versioned,
+  and only accepts HTTPS.
   - The bucket is write-once (WORM) for the instance: it can create new
     objects and read everything, including old versions, but can never
     delete or overwrite an object, even if someone adds IAM permissions to
@@ -191,8 +194,8 @@ same works for `prefix-lists.yaml`, and for a customized copy of
 - **AWS Backup:** the instance has the tag `BackupPlan=fusionpbx`.
   `backup-plan.json` takes a daily snapshot at 03:30 UTC, kept 35 days, and
   a monthly one on the 1st, kept 365 days, in the `Default` vault. On-host
-  `x-backup` runs an hour earlier, at 02:30 host time (UTC on a fresh Debian
-  AMI). For a local time zone, copy the plan to `deploy/aws/local/` and
+  `x-backup` runs about an hour earlier (`backup_time`, default 02:30 host time
+  plus up to 15 minutes; UTC on a fresh Debian AMI). For a local time zone, copy the plan to `deploy/aws/local/` and
   change `ScheduleExpressionTimezone`. `backup-selection.json` picks EC2 instances with that tag; the root
   volume carries the tag too, but is backed up as part of the instance, not
   separately. Create them once per account and region:

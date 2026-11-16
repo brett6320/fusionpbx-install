@@ -1,6 +1,6 @@
 # Carrier ACL Sync (`app/x_carrier_acl`)
 
-Status: design, 2026-11-11. Upstream refs are against `fusionpbx/fusionpbx` master (5.6.x) and `fusionpbx-install.sh` `debian/`, cloned read-only at `/tmp/claude-501/fpbx/core` and `/tmp/claude-501/fpbx/inst`. Paths below are relative to those roots unless absolute.
+Status: design, 2026-11-11. Upstream refs are against `fusionpbx/fusionpbx` upstream at the commit pinned in `config.sh` (`fusionpbx_commit`) and `fusionpbx-install.sh` `debian/`, cloned read-only at `/tmp/claude-501/fpbx/core` and `/tmp/claude-501/fpbx/inst`. Paths below are relative to those roots unless absolute.
 
 ## 1. Problem and stance
 
@@ -161,6 +161,7 @@ This table, not `v_access_control_nodes`, is the source of truth for both output
 | `firewall_mode` | `allow` | `allow` or `restrict` (section 7.4) |
 | `firewall_sip_ports` / `firewall_rtp_ports` | `5060:5091` / `16384:32768` | mirrors `iptables.sh:87-89` |
 | `fail2ban_ignoreip` | `true` | generate the fail2ban drop-in |
+| `acl_uuid` | empty | internal, managed by the app: uuid of the ACL list it owns (section 6.1). Do not edit |
 
 ## 5. Worker (`resources/cli/x_carrier_acl_worker.php`)
 
@@ -199,15 +200,15 @@ After all feeds: if any feed applied, or the snapshot on disk does not match the
 
 ### 5.4 Alerts
 
-Upstream `email` class, which inserts into `v_email_queue` when `email_queue.enabled` is true and sends directly otherwise (`resources/classes/email.php:264-301`); the queue is drained by the stock `email_queue.service` (`app/email_queue/resources/service/debian/email_queue.service`). The worker sets `recipients` from `x_carrier_acl.alert_email`, falling back to the global `email.smtp_from`, and `domain_uuid` to the first domain so the email settings resolve. Subjects: `[Carrier ACL] Approval required: <feed> (+N/-M)`, `... Update applied: <feed> (+N/-M)`, `... Feed update failed: <feed> (3 consecutive failures)`, `... Firewall update failed`. Bodies are plain text with the diff; CIDRs are what they are, no HTML. Every alert is also a `syslog(LOG_NOTICE|LOG_ERR)` line with ident `x_carrier_acl` and a run row.
+Upstream `email` class, which inserts into `v_email_queue` when `email_queue.enabled` is true and sends directly otherwise (`resources/classes/email.php:264-301`); the queue is drained by the stock `email_queue.service` (`app/email_queue/resources/service/debian/email_queue.service`). The worker sets `recipients` from `x_carrier_acl.alert_email`, falling back to the global `email.smtp_from`, and `domain_uuid` to the first domain so the email settings resolve. Subjects: `[Carrier ACL] Approval required: <feed> (+N/-M)`, `... Update applied: <feed> (+N/-M)`, `... Feed update failed: <feed> (3 consecutive failures)`, `... Update not applied: <feed>`, `... FreeSWITCH ACL reload failed: <feed>: <err>`, `... Firewall update failed`, `... Firewall snapshot failed`. Firewall alerts are gated by `failure` in `alert_on`. Bodies are written as plain text with the diff, then HTML-escaped and wrapped in `<pre>` because the upstream email class sends HTML (`x_carrier_acl_alert.php`). Every alert is also a `syslog(LOG_NOTICE|LOG_ERR)` line with ident `x_carrier_acl` and a run row.
 
 ## 6. FreeSWITCH ACL projection
 
 ### 6.1 Writing our list
 
-On first apply the worker ensures a `v_access_controls` row `access_control_name = x_carrier_auto`, `access_control_default = deny`, description "Managed by x_carrier_acl. Do not edit." (insert via `database::save` with temporary permissions `access_control_add`, the same trick upstream uses in `app/access_controls/app_defaults.php:77-83`). The uuid is cached in a setting so a rename by an admin is detected (the UI warns; the worker refuses to write to a renamed list and creates a new one).
+On first apply the worker ensures a `v_access_controls` row `access_control_name = x_carrier_auto`, `access_control_default = deny`, description "Managed by x_carrier_acl. Do not edit." (insert via `database::save($array, false)`, no transaction log, with temporary permission `access_control_add`, the same trick upstream uses in `app/access_controls/app_defaults.php:77-83`). The uuid is cached in a setting (`acl_uuid`, section 4) so a rename by an admin is detected (the UI warns; the worker refuses to write to a renamed list and creates a new one).
 
-Per feed apply, inside the transaction: delete every `v_access_control_nodes` row whose `access_control_node_uuid` is referenced by a removed entry, insert one `node_type = allow`, `node_cidr`, `node_description = x_carrier_acl:<feed_name>:<label>` row per added `signaling` entry, store the node uuid on the entry. `media` entries produce no node. Temporary permissions `access_control_node_add` / `access_control_node_delete` (`access_controls.php:112-121`).
+Per feed apply, inside the transaction: delete every `v_access_control_nodes` row whose `access_control_node_uuid` is referenced by a removed entry, insert one `node_type = allow`, `node_cidr`, `node_description = x_carrier_acl:<feed_name>:<label>` row per added `signaling` entry, store the node uuid on the entry. `media` entries produce no node. Node writes are direct SQL (`database::execute()`) inside one explicit PDO transaction under a postgres advisory lock (`x_carrier_acl_apply.php`), because `database::save()` opens its own transaction and cannot be nested; they therefore need no temporary permissions and write nothing to the upstream transaction log.
 
 Reconciliation at the start of every apply: any node in our list not referenced by an entry (admin added by hand, or crash mid-way) is deleted; any entry whose node vanished is re-created. Our list is ours.
 
@@ -294,7 +295,7 @@ IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 169.254.0.0/16 100.64.0.0/
 IPAddressAllow=127.0.0.0/8 ::1
 ```
 
-`StateDirectory=x_carrier_acl/export` makes systemd create `/var/lib/x_carrier_acl/export` owned by `www-data` and allow writes there despite `ProtectSystem=strict`. If `database.0.host` in `config.conf` is a private address other than loopback, install.sh appends it to `IPAddressAllow` via a drop-in (section 10). `MemoryDenyWriteExecute` is deliberately omitted: PHP opcache JIT may be enabled and would break.
+`StateDirectory=x_carrier_acl/export` makes systemd create `/var/lib/x_carrier_acl/export` owned by `www-data` and allow writes there despite `ProtectSystem=strict`. Private, non-loopback addresses among `database.0.host`, `database.1.host`, `switch.event_socket.host` and `event_socket.ip_address` in `config.conf` (hostnames resolved) and the `/etc/resolv.conf` nameservers are added to `IPAddressAllow` via the drop-in `10-db-host.conf` written by `resources/apps/carrier_acl.sh` (section 10). `MemoryDenyWriteExecute` is deliberately omitted: PHP opcache JIT may be enabled and would break.
 
 `x-carrier-acl-worker.timer`
 
@@ -332,19 +333,24 @@ The worker deletes the request file first thing.
 ```ini
 [Unit]
 Description=Apply carrier ACL firewall set from validated snapshot
-After=netfilter-persistent.service nftables.service
+After=netfilter-persistent.service nftables.service systemd-tmpfiles-setup.service
 Before=fail2ban.service
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/x-carrier-acl-apply
+;exit 3 = no supported firewall backend: recorded as "inactive" in status.json, not a unit failure
+SuccessExitStatus=3
 StateDirectory=x_carrier_acl/state
+StateDirectoryMode=0755
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateNetwork=no
 ProtectSystem=strict
-ReadWritePaths=/etc/fail2ban/jail.d /etc/iptables
+;"-": fail2ban or iptables-persistent may be absent. /run/xtables.lock is pre-created by
+;/etc/tmpfiles.d/x_carrier_acl.conf so iptables-legacy can take its lock under ProtectSystem=strict.
+ReadWritePaths=-/etc/fail2ban/jail.d -/etc/iptables -/run/xtables.lock
 ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelLogs=yes
@@ -352,14 +358,17 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 PrivateDevices=yes
-RestrictAddressFamilies=AF_NETLINK AF_UNIX
+;iptables-legacy programs the kernel through setsockopt on raw AF_INET/AF_INET6 sockets (not netlink), so those
+;families are needed; IPAddressDeny=any still stops any packet from being sent or received
+RestrictAddressFamilies=AF_NETLINK AF_UNIX AF_INET AF_INET6
 IPAddressDeny=any
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+;CAP_DAC_READ_SEARCH: read the www-data owned 0750 export directory and 0640 snapshot
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_READ_SEARCH
 SystemCallFilter=@system-service @network-io
 SystemCallArchitectures=native
 
@@ -367,7 +376,7 @@ SystemCallArchitectures=native
 WantedBy=multi-user.target
 ```
 
-`IPAddressDeny=any` plus `RestrictAddressFamilies=AF_NETLINK AF_UNIX` means the applier cannot open an IP socket at all: ipset/nft/iptables talk netlink, `fail2ban-client` talks a Unix socket. `ProtectKernelModules` is not set because iptables-legacy may autoload `xt_set`/`ip_set_hash_net`; install.sh also preloads them via `/etc/modules-load.d/x_carrier_acl.conf` so the applier never needs to. **Unverified:** whether `MemoryDenyWriteExecute` and the `@system-service` filter are compatible with `python3` and `iptables-legacy` on trixie; the installer's smoke test (section 10) runs the applier once and fails the install if it exits non-zero, so a mismatch is caught at install, not at 3 a.m.
+`RestrictAddressFamilies` includes `AF_INET AF_INET6` because iptables-legacy programs the kernel through `setsockopt` on raw IP sockets (ipset/nft use netlink, `fail2ban-client` a Unix socket); `IPAddressDeny=any` still stops the applier from sending or receiving any IP traffic. `CAP_DAC_READ_SEARCH` lets root read the `www-data`-owned 0750 export directory and 0640 snapshot. `SuccessExitStatus=3` treats exit 3 (no supported firewall backend, recorded as `inactive` in `status.json`) as success. `ReadWritePaths` entries are `-`-prefixed because fail2ban or iptables-persistent may be absent, and include `/run/xtables.lock`, which a tmpfiles drop-in (`/etc/tmpfiles.d/x_carrier_acl.conf`, from `systemd/tmpfiles.conf`) pre-creates so iptables-legacy can take its lock under `ProtectSystem=strict`. `ProtectKernelModules` is not set because iptables-legacy may autoload `xt_set`/`ip_set_hash_net`; install.sh also preloads them via `/etc/modules-load.d/x_carrier_acl.conf` so the applier never needs to. **Unverified:** whether `MemoryDenyWriteExecute` and the `@system-service` filter are compatible with `python3` and `iptables-legacy` on trixie; the installer's smoke test (section 10) runs the applier once and fails the install if it exits non-zero, so a mismatch is caught at install, not at 3 a.m.
 
 `x-carrier-acl-apply.path`
 
@@ -403,6 +412,7 @@ generation 42
 mode allow
 ports sip 5060:5091
 ports rtp 16384:32768
+fail2ban on
 count 31
 v4 192.76.120.10/32 signaling
 v4 36.255.198.128/25 media
@@ -413,11 +423,11 @@ end
 The applier (`/usr/local/sbin/x-carrier-acl-apply`, python3 standard library only: `ipaddress`, `subprocess`, `re`, `os`; root-owned 0755; ~200 lines) does, in order, and exits non-zero at the first failure without touching the kernel:
 
 1. Refuse unless the file is owned by `www-data`, is a regular file, is smaller than 1 MiB, and has fewer than 10 001 lines.
-2. Parse with a strict regex per line: header exactly as above, `generation` integer, `mode` in `{allow, restrict}`, `ports` as `^\d{1,5}:\d{1,5}$` with both ends 1..65535 and low ≤ high, `count` integer equal to the number of `v4`/`v6` lines, every `v4`/`v6` line `^v[46] <cidr> (signaling|media)$`, `end` present as the last line. Unknown line → refuse.
+2. Parse with a strict regex per line: header exactly as above, `generation` integer, `mode` in `{allow, restrict}`, `ports` as `^\d{1,5}:\d{1,5}$` with both ends 1024..65535 and low ≤ high (the ports are `www-data`-controlled too, so no SIP/RTP port below 1024, and a range may not include 3306, 5432, 6379, 7443, 8021 or 11211, or be wider than 100 ports for SIP / 32768 for RTP; SIP and RTP must not overlap), `fail2ban on|off`, `count` integer equal to the number of `v4`/`v6` lines, every `v4`/`v6` line `^v[46] <cidr> (signaling|media)$`, `end` present as the last line. Unknown line → refuse.
 3. Re-validate each CIDR with `ipaddress.ip_network(strict=True)` (so host bits are refused here even though the worker normalised them: belt and braces), re-apply the reject thresholds (`/16`, `/32`) and the reserved-range list from section 3 (hard-coded in the applier; the `feed_allow_private` option therefore cannot reach the firewall, which is intended: private carrier ranges, if any, go in the FreeSWITCH ACL only).
 4. `count 0` with `mode restrict` → refuse.
-5. Generation must be greater than the last applied generation in `/var/lib/x_carrier_acl/state/applied.gen` (replay protection: an older snapshot cannot be re-applied by rewriting `firewall.gen`), unless invoked with `--boot` (from the `multi-user.target` start), which re-applies the current snapshot.
-6. Program the backend (7.4) atomically, write the fail2ban drop-in if it changed, then write `state/applied.gen` and `state/status.json` (`{generation, backend, mode, v4, v6, result, ts}`, mode 0644 so the worker and UI can read it).
+5. Generation must not be lower than the last applied generation in `/var/lib/x_carrier_acl/state/applied.gen` (replay protection: an older snapshot cannot be re-applied by rewriting `firewall.gen`); the same generation is re-applied, which is what a boot or a firewall restart needs. `--boot` also accepts a lower generation (state restore); it is used by the installer smoke test (section 10), not by the unit.
+6. Program the backend (7.4) atomically, write the fail2ban drop-in if it changed, then write `state/applied.gen` and `state/status.json` (`{generation, backend, mode, v4, v6, local_v4, local_v6, snapshot_version, fail2ban, result, error, ts}`, mode 0644 so the worker and UI can read it).
 7. Log one journal line per run. On failure, `status.json` carries the error; the worker's next tick sees `applied.gen` lagging `firewall.gen`, records `run_firewall_result = failed` on the run and sends an alert.
 
 ### 7.4 Backends and set names
@@ -444,7 +454,7 @@ Apply: `ipset create x_carrier_v4_new hash:net family inet -exist; ipset flush x
 COMMIT
 ```
 
-(restrict mode appends `-A X_CARRIER_ACL -p udp --dport <sip> -m set ! --match-set x_carrier_v4 src -j DROP` and the tcp twin; see below). Then ensure the jump is at position 1: `iptables -C INPUT -j X_CARRIER_ACL` and, if present but `iptables -S INPUT 1` is not it, `-D` then `-I INPUT 1`. Position 1 puts carriers ahead of the `friendly-scanner` string drops (`iptables.sh:69-82`) and ahead of fail2ban's `f2b-*` chains, which fail2ban also inserts at position 1 when a jail starts; the ignoreip drop-in below makes the outcome deterministic regardless of who inserted last. Finally write `/etc/iptables/ipsets` with `ipset save` so that `netfilter-persistent` restores the sets before `rules.v4` at boot; otherwise an `iptables-restore` of a saved rules file that references a missing set fails as a whole and can leave the box with default-ACCEPT policies. **Unverified:** Debian trixie's `ipset-persistent` package and its `10-ipset` plugin path; install.sh asserts the plugin exists after `apt-get install ipset-persistent` and otherwise strips our chain from any `rules.v4` save (post-save hook) and relies on `x-carrier-acl-apply.service` at boot alone.
+(restrict mode appends `-A X_CARRIER_ACL -p udp --dport <sip> -m set ! --match-set x_carrier_v4 src -j DROP` and the tcp twin; see below). Then ensure the jump is at position 1: `iptables -C INPUT -j X_CARRIER_ACL` and, if present but `iptables -S INPUT 1` is not it, `-D` then `-I INPUT 1`. Position 1 puts carriers ahead of the `friendly-scanner` string drops (`iptables.sh:69-82`) and ahead of fail2ban's `f2b-*` chains, which fail2ban also inserts at position 1 when a jail starts; the ignoreip drop-in below makes the outcome deterministic regardless of who inserted last. Finally write `/etc/iptables/ipsets` with `ipset save` so that `netfilter-persistent` restores the sets before `rules.v4` at boot; otherwise an `iptables-restore` of a saved rules file that references a missing set fails as a whole and can leave the box with default-ACCEPT policies. **Unverified:** Debian trixie's `ipset-persistent` package and its `10-ipset` plugin path; after `apt-get install ipset-persistent`, if `rules.v4` exists but the plugin does not, install dies and upgrade warns not to run `netfilter-persistent save` while our chain is loaded (`resources/apps/carrier_acl.sh`).
 
 Note that upstream configures no `ip6tables` rules at all (`iptables.sh` is v4-only), so the v6 default policy is ACCEPT; our v6 chain is still installed for consistency and for restrict mode, but the wide-open v6 INPUT is an upstream issue to track separately.
 
@@ -466,7 +476,7 @@ table inet x_carrier_acl {
 
 Applied with `nft -f` of a generated file that starts with `add table inet x_carrier_acl` and `flush table inet x_carrier_acl` so the whole replacement is one atomic transaction. Caveat the UI states plainly: in nftables an `accept` in one base chain does not stop a `drop` in another base chain (upstream's `inet filter input` at priority 0, fail2ban's `f2b-table`). In `allow` mode on nft our rule is therefore only a counter and a guarantee for restrict mode; carrier protection from bans comes from the fail2ban drop-in.
 
-**Modes.** `allow` (default): carriers are accepted early on SIP+RTP ports and exempted from fail2ban. Nothing is blocked that was not blocked before. `restrict` (opt-in, red warning in UI): SIP ports also drop from any source not in the carrier set or the local networks (section 12). Phones on networks not listed there can no longer register, so the UI requires typing the word `restrict` to enable it and the applier refuses an empty carrier set in that mode.
+**Modes.** `allow` (default): carriers are accepted early on SIP+RTP ports and exempted from fail2ban. Nothing is blocked that was not blocked before. `restrict` (opt-in): SIP ports also drop from any source not in the carrier set or the local networks (section 12). Phones on networks not listed there can no longer register. `firewall_mode` is a plain Default Setting (no typed confirmation); while it is `restrict`, the feeds and local networks pages show a red warning banner, and the applier refuses an empty carrier set in that mode.
 
 **Fail2ban.** When `fail2ban_ignoreip` is on, the applier writes `/etc/fail2ban/jail.d/x_carrier_acl.local`:
 
@@ -501,6 +511,9 @@ App layout:
   x_carrier_acl_feeds.php, x_carrier_acl_feed_edit.php, x_carrier_acl_preview.php
   x_carrier_acl_runs.php, x_carrier_acl_run_approve.php (POST only)
   x_carrier_acl_entries.php
+  x_carrier_acl_local_networks.php, x_carrier_acl_local_network_edit.php   (section 12)
+  resources/classes/x_carrier_acl.php              (shared constants, settings, file paths)
+  resources/classes/x_carrier_acl_local.php        (local networks, section 12)
   resources/classes/x_carrier_acl_fetch.php
   resources/classes/x_carrier_acl_validate.php
   resources/classes/x_carrier_acl_diff.php
@@ -509,14 +522,15 @@ App layout:
   resources/classes/parsers/{cidr_list,csv,json_path,html_ip_scrape}.php
   resources/cli/x_carrier_acl_worker.php
   resources/cli/x_carrier_acl_attach.php           (sip profile rows; installer calls it)
+  resources/cli/x_carrier_acl_aws.php              (AWS prefix-list feeds, section 13)
 ```
 
-Nothing under `resources/service/`. The root applier and all units ship from this repo's `files/` tree, not from the app directory.
+Nothing under `resources/service/`. The root applier and all units ship in the repo next to the app, in `apps/x_carrier_acl/sbin/` and `apps/x_carrier_acl/systemd/` (including `dropins/`, `modules-load.conf`, `tmpfiles.conf`); `resources/apply.sh` excludes both directories from the webroot copy and `resources/apps/carrier_acl.sh` installs them. There is no `files/` tree.
 
 ## 9. Audit
 
 - Every run is a `v_x_carrier_acl_runs` row with counts, hashes, proposal, approver.
-- Node writes also land in upstream's `v_database_transactions` when that app is installed (`resources/classes/database.php:2364`), so the stock Database Transactions page shows them too.
+- Node writes are direct SQL and the list row is saved with `save($array, false)`, so none of it lands in upstream's `v_database_transactions`; the Runs table is the audit trail.
 - Worker and applier both log to the journal/syslog with ident `x_carrier_acl`.
 - Alerts (section 5.4) on change, failure, approval needed, firewall apply failure.
 
@@ -532,7 +546,7 @@ Nothing under `resources/service/`. The root applier and all units ship from thi
 | package | why | status |
 |---|---|---|
 | `ipset` | sets for iptables backend | add |
-| `ipset-persistent` | restore sets before `rules.v4` at boot | add; **unverified** name/plugin on trixie, install.sh asserts `/usr/share/netfilter-persistent/plugins.d/10-ipset` exists |
+| `ipset-persistent` | restore sets before `rules.v4` at boot | add; **unverified** name/plugin on trixie. If `/etc/iptables/rules.v4` exists and `/usr/share/netfilter-persistent/plugins.d/10-ipset` does not, install dies and upgrade warns (`resources/apps/carrier_acl.sh`) |
 | `python3` | applier | present on Debian standard installs; assert `command -v python3` |
 | `php8.4-curl`, `php8.4-xml` | fetcher, html parser | already installed (`php.sh:163`) |
 | `ca-certificates` | TLS verification | already present; assert |
@@ -546,10 +560,10 @@ Nothing under `resources/service/`. The root applier and all units ship from thi
 | `/usr/local/sbin/x-carrier-acl-apply` | `root:root` | 0755 | python3, stdlib only |
 | `/etc/systemd/system/x-carrier-acl-worker.{service,timer,path}` | `root:root` | 0644 | |
 | `/etc/systemd/system/x-carrier-acl-apply.{service,path}` | `root:root` | 0644 | |
-| `/etc/systemd/system/x-carrier-acl-worker.service.d/10-db-host.conf` | `root:root` | 0644 | only when DB host is private and not loopback: `IPAddressAllow=<host>` |
+| `/etc/systemd/system/x-carrier-acl-worker.service.d/10-db-host.conf` | `root:root` | 0644 | only when a private, non-loopback address is found among `database.0.host`, `database.1.host`, `switch.event_socket.host`, `event_socket.ip_address` (hostnames resolved) and the `/etc/resolv.conf` nameservers: `IPAddressAllow=<addresses>` |
 | `/etc/systemd/system/netfilter-persistent.service.d/x_carrier_acl.conf` | `root:root` | 0644 | |
 | `/etc/systemd/system/nftables.service.d/x_carrier_acl.conf` | `root:root` | 0644 | harmless if nftables is absent |
-| `/etc/modules-load.d/x_carrier_acl.conf` | `root:root` | 0644 | `ip_set`, `ip_set_hash_net`, `xt_set`, `xt_multiport` |
+| `/etc/modules-load.d/x_carrier_acl.conf` | `root:root` | 0644 | 9 modules: `ip_set`, `ip_set_hash_net`, `xt_set`, `xt_multiport`, `ip_tables`, `ip6_tables`, `iptable_filter`, `ip6table_filter`, `xt_conntrack` |
 | `/var/lib/x_carrier_acl/` | `root:root` | 0755 | |
 | `/var/lib/x_carrier_acl/export/` | `www-data:www-data` | 0750 | snapshot, `firewall.gen`, `run.request` (systemd `StateDirectory` creates it; install.sh pre-creates for the smoke test) |
 | `/var/lib/x_carrier_acl/state/` | `root:root` | 0755 | `applied.gen` 0600, `status.json` 0644 |
@@ -567,25 +581,29 @@ ipset `x_carrier_v4`, `x_carrier_v6`, `x_carrier_lan_v4`, `x_carrier_lan_v6` (+ 
 # 1. packages and modules
 apt-get install -y --no-install-recommends ipset ipset-persistent
 command -v python3 >/dev/null || { echo "python3 missing"; exit 1; }
-[ -f /etc/iptables/rules.v4 ] && [ ! -f /usr/share/netfilter-persistent/plugins.d/10-ipset ] && echo "WARN: ipset-persistent plugin missing; boot restore relies on x-carrier-acl-apply.service only"
-install -o root -g root -m 0644 files/x_carrier_acl/modules-load.conf /etc/modules-load.d/x_carrier_acl.conf
+# ipset-persistent plugin missing while rules.v4 exists: install dies, upgrade only warns
+[ -f /etc/iptables/rules.v4 ] && [ ! -f /usr/share/netfilter-persistent/plugins.d/10-ipset ] && { echo "ipset-persistent plugin missing; refusing to install firewall sync"; exit 1; }
+install -o root -g root -m 0644 apps/x_carrier_acl/systemd/modules-load.conf /etc/modules-load.d/x_carrier_acl.conf
 systemctl restart systemd-modules-load.service
+install -o root -g root -m 0644 apps/x_carrier_acl/systemd/tmpfiles.conf /etc/tmpfiles.d/x_carrier_acl.conf   # /run/xtables.lock
+systemd-tmpfiles --create /etc/tmpfiles.d/x_carrier_acl.conf
 
 # 2. app
-rsync -a --delete app/x_carrier_acl/ /var/www/fusionpbx/app/x_carrier_acl/
+rsync -a --delete --exclude systemd/ --exclude sbin/ apps/x_carrier_acl/ /var/www/fusionpbx/app/x_carrier_acl/   # resources/apply.sh
 chown -R www-data:www-data /var/www/fusionpbx/app/x_carrier_acl
 test ! -e /var/www/fusionpbx/app/x_carrier_acl/resources/service   # guard against upstream auto-install of units
 
 # 3. root applier, dirs, units
-install -o root -g root -m 0755 files/x_carrier_acl/x-carrier-acl-apply /usr/local/sbin/x-carrier-acl-apply
+install -o root -g root -m 0755 apps/x_carrier_acl/sbin/x-carrier-acl-apply /usr/local/sbin/x-carrier-acl-apply
 install -d -o root -g root -m 0755 /var/lib/x_carrier_acl /var/lib/x_carrier_acl/state
 install -d -o www-data -g www-data -m 0750 /var/lib/x_carrier_acl/export
-install -o root -g root -m 0644 files/x_carrier_acl/units/x-carrier-acl-*.{service,timer,path} /etc/systemd/system/
+install -o root -g root -m 0644 apps/x_carrier_acl/systemd/x-carrier-acl-*.{service,timer,path} /etc/systemd/system/
 install -d /etc/systemd/system/netfilter-persistent.service.d /etc/systemd/system/nftables.service.d
-install -o root -g root -m 0644 files/x_carrier_acl/units/firewall-hook.conf /etc/systemd/system/netfilter-persistent.service.d/x_carrier_acl.conf
-install -o root -g root -m 0644 files/x_carrier_acl/units/firewall-hook.conf /etc/systemd/system/nftables.service.d/x_carrier_acl.conf
-db_host=$(sed -n 's/^database\.0\.host *= *//p' /etc/fusionpbx/config.conf)
-# if $db_host is a private non-loopback address: write 10-db-host.conf with IPAddressAllow=$db_host
+install -o root -g root -m 0644 apps/x_carrier_acl/systemd/dropins/netfilter-persistent.service.d/x_carrier_acl.conf /etc/systemd/system/netfilter-persistent.service.d/x_carrier_acl.conf
+install -o root -g root -m 0644 apps/x_carrier_acl/systemd/dropins/nftables.service.d/x_carrier_acl.conf /etc/systemd/system/nftables.service.d/x_carrier_acl.conf
+# hosts from config.conf database.0.host, database.1.host, switch.event_socket.host, event_socket.ip_address
+# (hostnames resolved) plus /etc/resolv.conf nameservers; every private non-loopback address among them goes into
+# 10-db-host.conf as IPAddressAllow=...; the drop-in is removed when there is none
 systemctl daemon-reload
 
 # 4. register with FusionPBX
@@ -614,11 +632,11 @@ Step 6 runs `x-carrier-acl-apply` directly (not via the unit) and then via `syst
 ### Commands upgrade.sh must run
 
 ```sh
-rsync -a --delete app/x_carrier_acl/ /var/www/fusionpbx/app/x_carrier_acl/
+rsync -a --delete --exclude systemd/ --exclude sbin/ apps/x_carrier_acl/ /var/www/fusionpbx/app/x_carrier_acl/   # resources/apply.sh
 chown -R www-data:www-data /var/www/fusionpbx/app/x_carrier_acl
 test ! -e /var/www/fusionpbx/app/x_carrier_acl/resources/service
-install -o root -g root -m 0755 files/x_carrier_acl/x-carrier-acl-apply /usr/local/sbin/x-carrier-acl-apply
-install -o root -g root -m 0644 files/x_carrier_acl/units/x-carrier-acl-*.{service,timer,path} /etc/systemd/system/
+install -o root -g root -m 0755 apps/x_carrier_acl/sbin/x-carrier-acl-apply /usr/local/sbin/x-carrier-acl-apply
+install -o root -g root -m 0644 apps/x_carrier_acl/systemd/x-carrier-acl-*.{service,timer,path} /etc/systemd/system/
 systemctl daemon-reload
 cd /var/www/fusionpbx
 sudo -u www-data php core/upgrade/upgrade.php --schema

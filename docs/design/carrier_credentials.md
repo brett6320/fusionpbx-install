@@ -1,6 +1,6 @@
-# Carrier Credentials (`app/x_carriers`)
+# Carrier Credentials (`app/x_carrier_credentials`)
 
-Status: design, 2026-11-11. Upstream refs are against `fusionpbx/fusionpbx` master (5.6.x) and `fusionpbx-install.sh` `debian/`, cloned read-only at `/tmp/claude-501/fpbx/core` and `/tmp/claude-501/fpbx/inst`. Paths below are relative to those roots.
+Status: design, 2026-11-11. Upstream refs are against `fusionpbx/fusionpbx` upstream at the commit pinned in `config.sh` (`fusionpbx_commit`) and `fusionpbx-install.sh` `debian/`, cloned read-only at `/tmp/claude-501/fpbx/core` and `/tmp/claude-501/fpbx/inst`. Paths below are relative to those roots.
 
 ## 1. Problem and stance
 
@@ -17,7 +17,7 @@ The optional `fusionpbx-app-sip_trunks` was inspected and is not relevant: it on
 
 ## 2. Data model
 
-All tables are created from `app/x_carriers/app_config.php` `['db']` entries (upstream discovers any `app/*/app_config.php` via `resources/classes/schema.php:61` and applies with `upgrade.php --schema`, `core/upgrade/upgrade.php:221`). No core file changes.
+All tables are created from `app/x_carrier_credentials/app_config.php` `['db']` entries (upstream discovers any `app/*/app_config.php` via `resources/classes/schema.php:61` and applies with `upgrade.php --schema`, `core/upgrade/upgrade.php:221`). No core file changes.
 
 ### `v_x_carriers` (global catalogue, superadmin)
 
@@ -52,7 +52,7 @@ One domain may have several accounts for the same carrier (separate trunks, sepa
 | `x_carrier_account_uuid` | fk |
 | `domain_uuid` | denormalised for permission filtering |
 | `x_carrier_credential_type` | `sip_digest`, `ip_auth`, `api_token` |
-| `x_carrier_credential_label` | e.g. "primary", "rotating-in" |
+| `x_carrier_credential_label` | e.g. "primary". A `pending` credential keeps its label; during rotation `-rotating-in` (gateway) or `.rotating-in` (route) is appended to the temporary gateway/route name instead |
 | `x_carrier_credential_public` | non-secret part: SIP username / auth-username / realm for `sip_digest`; carrier-facing source identity for `ip_auth`; API key id for `api_token`. Stored plaintext (it is not secret and must be searchable) |
 | `x_carrier_credential_secret` | sodium secretbox ciphertext, base64. SIP password; tech prefix/token; API secret |
 | `x_carrier_credential_key_id` | which master key encrypted it (for rotation) |
@@ -86,10 +86,10 @@ A `sip_digest` credential normally has one `gateway` binding (two if the same pa
 | `x_carrier_audit_action` | `create`, `update_secret`, `rotate`, `reveal`, `push`, `retire`, `delete`, `key_rotate` |
 | `x_carrier_audit_user_uuid`, `x_carrier_audit_username` | from `$_SESSION` |
 | `x_carrier_audit_remote_address` | |
-| `x_carrier_audit_detail` | JSON, never contains secret material; contains credential version numbers, gateway UUIDs, outcome, and the secret's fingerprint (first 8 hex of `sodium_crypto_generichash(secret)`) so two events can be compared without storing the value |
+| `x_carrier_audit_detail` | JSON, never contains secret material; contains credential version numbers, gateway UUIDs, outcome, and the secret's fingerprint (first 8 hex of a keyed BLAKE2b, `sodium_crypto_generichash`, whose key is a subkey derived from the master key; `x_carrier_keyring::fingerprint()`) so two events can be compared without storing the value. Fingerprints are comparable only under the same key id |
 | `x_carrier_audit_date` | |
 
-Rows in `v_x_carrier_credentials` and `v_x_carrier_audit` must be written with `$database->save($array, false)` (the second argument disables the transaction log, `resources/classes/database.php:2364`). Ciphertext in the transaction log would be harmless, but `reveal` events and plaintext public fields do not belong there either, and the pushes we make into `v_gateways` are logged by upstream anyway (section 5.4).
+Rows in `v_x_carrier_credentials` and `v_x_carrier_audit` must be written with `$database->save($array, false)` (the second argument disables the transaction log, `resources/classes/database.php:2364`). Ciphertext in the transaction log would be harmless, but `reveal` events and plaintext public fields do not belong there either. The pushes into `v_gateways` are written the same way, so our pushes add no plaintext secrets to the log; the stock gateway editor still logs them (section 5.4).
 
 ## 3. Credential types and how each reaches FreeSWITCH
 
@@ -119,11 +119,11 @@ Multiple trunks: each `ip_auth` or `sip_digest` credential can be bound to sever
 
 ### 5.1 Writer
 
-`app/x_carriers/resources/classes/x_carrier_push.php::push($credential_uuid)`:
+`app/x_carrier_credentials/resources/classes/x_carrier_push.php::push($credential_uuid)`:
 
 1. Load credential, decrypt secret (section 6).
 2. For each `gateway` binding, build the `v_gateways` row: carrier defaults from `v_x_carriers`, identity from the credential, `domain_uuid` from the account, `enabled` from account and credential status. Set `gateway` (display name) to `<carrier>-<account>-<label>` so it is recognisable in the stock Gateways page.
-3. `$database->save($array)` into `gateways` with `app_name`/`app_uuid` set to upstream's gateway app, so stock pages see it as a normal gateway.
+3. `$database->save($array, false)` (via `x_carriers::save_rows()`, which grants temporary `gateway_add`/`gateway_edit` permissions) into `gateways` with `app_name`/`app_uuid` set to upstream's gateway app, so stock pages see it as a normal gateway.
 4. Replicate the post-save sequence from `app/gateways/gateway_edit.php` verbatim:
    - unlink the XML file when disabling (`:234-239`);
    - `save_gateway_xml()` (`:242`; defined in `resources/switch.php:133`), which rewrites every gateway XML for the current domain, not only ours;
@@ -198,7 +198,7 @@ Recommendation, documented and implemented in the installer contract:
 
 ## 8. Permissions
 
-Defined in `app/x_carriers/app_config.php` and applied by `upgrade.php --permissions` (`core/upgrade/upgrade.php:224`). Upstream's gateway permissions are superadmin-only (`app/gateways/app_config.php:53-76`); we follow that for anything that writes to `v_gateways`.
+Defined in `app/x_carrier_credentials/app_config.php` and applied by `upgrade.php --permissions` (`core/upgrade/upgrade.php:224`). Upstream's gateway permissions are superadmin-only (`app/gateways/app_config.php:53-76`); we follow that for anything that writes to `v_gateways`.
 
 | permission | superadmin | admin (domain) | purpose |
 |---|---|---|---|
@@ -216,7 +216,7 @@ All queries filter `domain_uuid = $_SESSION['domain_uuid']` unless `x_carrier_al
 ## 9. App layout
 
 ```
-/var/www/fusionpbx/app/x_carriers/
+/var/www/fusionpbx/app/x_carrier_credentials/
   app_config.php          tables, permissions, default settings, menu
   app_defaults.php        seed carrier catalogue rows (Telnyx etc.), idempotent
   app_menu.php
@@ -225,14 +225,25 @@ All queries filter `domain_uuid = $_SESSION['domain_uuid']` unless `x_carrier_al
   x_carrier_accounts.php, x_carrier_account_edit.php
   x_carrier_credential_edit.php, x_carrier_credential_reveal.php (POST only)
   x_carrier_audit.php
-  resources/classes/x_carrier_keyring.php      key file access, seal/open
+  resources/classes/x_carriers.php             store: credential/account rows, audit, save_rows (save($array, false))
+  resources/classes/x_carrier_keyring.php      key file access, seal/open, fingerprint
   resources/classes/x_carrier_secret.php       redacting value object
   resources/classes/x_carrier_push.php         v_gateways + outbound route writer
   resources/classes/x_carrier_routes.php       outbound route composer modelled on dialplan_outbound_add.php
-  resources/cli/x_carriers_keyring.php         generate|rotate|check|prune|reseal-from-gateways
+  resources/cli/x_carriers_keyring.php         generate|rotate|reencrypt|check|prune|reseal-from-gateways [--all]|maintenance
 ```
 
-No file outside `app/x_carriers/` is modified. Upstream upgrades (`git pull` of the core, then `upgrade.php --schema --defaults --menu --permissions`) leave the app in place because the installer treats `app/*` as the extension point (`core/upgrade/upgrade.php:453`, `resources/classes/schema.php:61`).
+Shipped in the repo next to the app but not copied into the web root (`resources/apply.sh` excludes `systemd/` and `sbin/`); installed to `/etc/systemd/system/` by `resources/apply.sh`:
+
+```
+apps/x_carrier_credentials/systemd/
+  x-carrier-credentials-maintenance.service    oneshot as www-data: x_carriers_keyring.php maintenance
+  x-carrier-credentials-maintenance.timer      every 15 minutes
+```
+
+`maintenance` erases the secrets of retired versions older than `x_carriers.retired_retention_days` (default 30) and re-pushes credentials whose validity window (`not_before`/`not_after`) opened or closed since their last push.
+
+No file outside `app/x_carrier_credentials/` is modified. Upstream upgrades (`git pull` of the core, then `upgrade.php --schema --defaults --menu --permissions`) leave the app in place because the installer treats `app/*` as the extension point (`core/upgrade/upgrade.php:453`, `resources/classes/schema.php:61`).
 
 ## 10. Installer contract
 
@@ -258,8 +269,8 @@ No file outside `app/x_carriers/` is modified. Upstream upgrades (`git pull` of 
 | `/etc/fusionpbx/x_carriers/keys/<key_id>.key` | `root:www-data` | `0640` | key generation |
 | `/etc/fusionpbx/x_carriers/keys/active` | symlink | | key generation |
 | `/var/backups/x_carriers-keys/` | `root:root` | `0700` | install.sh |
-| `/etc/cron.daily/x_carriers-keybackup` | `root:root` | `0755` | install.sh |
-| `/var/www/fusionpbx/app/x_carriers/` | `www-data:www-data` | as rest of web root | install.sh (copy from this repo, not a git clone inside the web root) |
+| `/etc/cron.daily/x_carriers-keybackup` | `root:root` | `0755` | `resources/apps/carrier_credentials.sh` (script generated inline) |
+| `/var/www/fusionpbx/app/x_carrier_credentials/` | `www-data:www-data` | as rest of web root | install.sh (copy from this repo, not a git clone inside the web root) |
 
 `www-data` can read the key because the web app must decrypt (section 6.1). It cannot write the key directory, so a web-user compromise cannot swap or delete keys, only read them.
 
@@ -277,15 +288,15 @@ if [ ! -e "$dir/active" ]; then
 fi
 ```
 
-`php /var/www/fusionpbx/app/x_carriers/resources/cli/x_carriers_keyring.php generate` does the same from PHP using `sodium_crypto_secretbox_keygen()`; the shell form exists so install.sh does not depend on the app being deployed first.
+`php /var/www/fusionpbx/app/x_carrier_credentials/resources/cli/x_carriers_keyring.php generate` does the same from PHP using `sodium_crypto_secretbox_keygen()`; the shell form exists so install.sh does not depend on the app being deployed first.
 
 ### Commands install.sh must run (in order, after upstream `finish.sh` equivalent)
 
 ```sh
 # 1. extension check (above)
 # 2. deploy app
-rsync -a --delete app/x_carriers/ /var/www/fusionpbx/app/x_carriers/
-chown -R www-data:www-data /var/www/fusionpbx/app/x_carriers
+rsync -a --delete --exclude systemd/ --exclude sbin/ apps/x_carrier_credentials/ /var/www/fusionpbx/app/x_carrier_credentials/
+chown -R www-data:www-data /var/www/fusionpbx/app/x_carrier_credentials
 # 3. key
 <key generation block>
 # 4. register with FusionPBX (schema, defaults seed the carrier catalogue, menu, permissions)
@@ -295,29 +306,31 @@ sudo -u www-data php core/upgrade/upgrade.php --defaults
 sudo -u www-data php core/upgrade/upgrade.php --menu
 sudo -u www-data php core/upgrade/upgrade.php --permissions
 # 5. verify key readable by web user and store decrypts
-sudo -u www-data php app/x_carriers/resources/cli/x_carriers_keyring.php check
-# 6. key backup cron
-install -o root -g root -m 0755 files/x_carriers-keybackup /etc/cron.daily/x_carriers-keybackup
+sudo -u www-data php app/x_carrier_credentials/resources/cli/x_carriers_keyring.php check
+# 6. key backup cron: resources/apps/carrier_credentials.sh writes the script inline
+#    (heredoc; rsync of the key dir to /var/backups/x_carriers-keys/, root:root, D0700/F0600),
+#    there is no files/ copy in the repo
 install -d -o root -g root -m 0700 /var/backups/x_carriers-keys
+install -o root -g root -m 0755 "$cron_tmp" /etc/cron.daily/x_carriers-keybackup
+/etc/cron.daily/x_carriers-keybackup   # back up a new key now
 ```
 
 ### Commands upgrade.sh must run
 
 ```sh
-rsync -a --delete app/x_carriers/ /var/www/fusionpbx/app/x_carriers/
-chown -R www-data:www-data /var/www/fusionpbx/app/x_carriers
+rsync -a --delete --exclude systemd/ --exclude sbin/ apps/x_carrier_credentials/ /var/www/fusionpbx/app/x_carrier_credentials/
+chown -R www-data:www-data /var/www/fusionpbx/app/x_carrier_credentials
 cd /var/www/fusionpbx
 sudo -u www-data php core/upgrade/upgrade.php --schema
 sudo -u www-data php core/upgrade/upgrade.php --defaults
 sudo -u www-data php core/upgrade/upgrade.php --menu
 sudo -u www-data php core/upgrade/upgrade.php --permissions
-sudo -u www-data php app/x_carriers/resources/cli/x_carriers_keyring.php check
-# optional, if the operator passed --rotate-carrier-key
-php app/x_carriers/resources/cli/x_carriers_keyring.php rotate && \
-sudo -u www-data php app/x_carriers/resources/cli/x_carriers_keyring.php reencrypt
+sudo -u www-data php app/x_carrier_credentials/resources/cli/x_carriers_keyring.php check
 ```
 
-`check` exits non-zero if `active` is missing, unreadable by `www-data`, or any `x_carrier_credential_key_id` refers to a key file that no longer exists. upgrade.sh must abort on non-zero before restarting services.
+Master key rotation is not an upgrade.sh option (there is no `--rotate-carrier-key`). An operator runs it by hand, as root: `resources/apps/carrier_credentials.sh upgrade --rotate-key`, which runs `x_carriers_keyring.php rotate` as root, `reencrypt` as `www-data`, then the key backup script again.
+
+`check` exits non-zero if `active` is missing, unreadable by `www-data`, or any `x_carrier_credential_key_id` refers to a key file that no longer exists. upgrade.sh runs `check` as a preflight, before core is moved, and dies on failure (`upgrade.sh`, "Preflight"). The post-copy `check` in `resources/apps/carrier_credentials.sh` dies on install but only warns in upgrade mode, so a failure there never leaves new code on the old schema.
 
 ## 11. Unverified / open
 

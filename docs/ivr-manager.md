@@ -24,15 +24,15 @@ groups on install:
 | `x_ivr_manager_edit` | Ordering options, choosing, removing and deleting greetings |
 | `x_ivr_manager_record` | Recording greetings in the browser |
 | `x_ivr_manager_tts` | Text to speech greetings with the speech app |
-| `x_ivr_manager_phrase` | Building phrases with Google Text-to-Speech |
+| `x_ivr_manager_phrase` | Building phrases with Google Text-to-Speech (also needs `x_ivr_manager_edit` and the Phrases app) |
 | `x_ivr_manager_schedule` | Creating, changing and removing schedules |
 
 A few stock permissions matter too:
 
 - **Playing greetings** in the browser needs `recording_play` or
   `recording_download`.
-- **Deleting** needs `recording_delete` for a recording, or `phrase_delete`
-  for a phrase.
+- **Deleting** needs `x_ivr_manager_edit` plus `recording_delete` for a
+  recording, or `phrase_delete` for a phrase.
 - **The IVR Menu and Time Condition buttons**, which open the stock editors,
   need `ivr_menu_edit` and `time_condition_edit`.
 
@@ -81,35 +81,46 @@ set them, a caller hears nothing and the call ends after the menu's timeouts.
 > 22 digits is longer than any stock route matches. IVR Manager also refuses
 > any number that one of your outbound routes matches.
 
-The domain's IVR menu limit (`limit > ivr_menus`), if set, applies here too.
+The domain's IVR menu limit (`limit > ivr_menus`), if set, applies here too:
+once it is reached, **Add** returns to the list with a message.
+
+The list page shows each menu's extension, number of options, long greeting,
+schedule extension and whether it is enabled, and has a search box.
 
 ## Options
 
 Options (press 1 for sales, and so on) are added in the stock editor: click
 **IVR Menu** at the top of the page, add them there, and come back.
 
-In IVR Manager, **Option Order** lists the options. Drag them into the order you
-want and click **Save Order**. The order numbers are updated for you.
+In IVR Manager, **Option Order** lists the options. Drag them, or use the up
+and down arrows, into the order you want and click **Save Order**. The order
+numbers are renumbered 10, 20, 30, … (1, 2, 3, … above 99 options). The stock editor lists options by digit,
+so this order only shows in IVR Manager.
 
 ## Greetings
 
 A menu has two greetings:
 
 - **Greet Long** plays when a caller reaches the menu.
-- **Greet Short** plays when the menu repeats, e.g. after an invalid entry.
-  If it is empty, the long greeting is used.
+- **Greet Short** plays when the menu repeats, e.g. after an invalid entry or
+  a timeout. That only happens when **Max Failures** / **Max Timeouts** (stock
+  IVR Menu editor) are above 1. Menus created here take the `ivr_menu >
+  max_failures` / `max_timeouts` default settings, or 1, so by default the
+  call ends instead. If Greet Short is empty, the long greeting is used.
 
 For each greeting the page shows:
 
 - what is set now,
-- **Play**,
+- an audio player for a recording, or **Play** for a phrase (both need
+  `recording_play` or `recording_download`),
 - for text to speech greetings, the text with a **Copy Text** button,
 - **Remove from Menu**.
 
 ### Use an existing recording or phrase
 
-Under **Choose a Recording or Phrase**, pick one of the domain's recordings or
-phrases. You can **Play** it and see its text before you choose. Then pick Greet
+Under **Choose a Recording or Phrase** (shown once the domain has any), pick
+one of the domain's recordings or phrases; phrases show their language and
+whether they are disabled. You can **Play** it and see its text before you choose. Then pick Greet
 Long or Greet Short and click **Set Greeting**.
 
 A phrase only plays when it is enabled and in the menu's language, so the
@@ -123,21 +134,22 @@ picker refuses others.
 
 It is saved as a recording of the domain and set on the menu.
 
-These Default Settings in `x_ivr_manager` control recordings:
+These Default Settings in `x_ivr_manager` control browser recordings:
 
-| Setting | Default |
-|---|---|
-| `recording_sample_rate` | 8000 (or 16000) |
-| `recording_max_seconds` | 300 |
-| `recording_max_size` | 10 MB |
+| Setting | Default | Notes |
+|---|---|---|
+| `recording_sample_rate` | 8000 | 8000 or 16000; anything else means 8000. Also used for phrase recordings. |
+| `recording_max_seconds` | 300 | 1 to 3600; recording stops by itself at the limit. |
+| `recording_max_size` | 10 MB | Capped at 20 MB. |
 
 Audio is stored as mono WAV.
 
 ### Text to speech
 
-Type the greeting, choose a voice and click **Generate**. The audio is saved as
-a recording, set on the menu, and keeps its text so you can read or copy it
-later.
+Type the greeting, choose a voice and click **Generate**. Optionally give a
+**Recording Name** and, if the engine supports it, a **Speed**. The audio (mp3
+or wav, depending on the engine) is saved as a recording, set on the menu, and
+keeps its text so you can read or copy it later.
 
 ### Phrase (Google Text-to-Speech)
 
@@ -145,16 +157,25 @@ Use a phrase for a greeting built from parts:
 
 1. Under **New Phrase**, add text parts and pauses in the order they should
    play (**Add Text**, **Add Pause**).
-2. Choose a voice and click **Create Phrase**.
+2. Choose a voice, a **Speed** (0.75x–1.25x) and where to use it (**Use As**
+   Greet Long, Greet Short, or not as a greeting), then click **Create
+   Phrase**.
 
-Each text part becomes a recording named "<phrase> - Part 1", "Part 2", and so
-on. The phrase plays the parts in order with the pauses. Its description keeps
-the whole script on one line, pauses included. You can reuse the phrase in other
+Limits: up to 20 parts, 5000 bytes of text in all, pauses of 0.1 to 10
+seconds, and at least one text part. Without Google credentials the section
+shows a setup notice instead.
+
+The **Phrase Name** is filled in, e.g. "Main_Menu_Greeting_2026-11-16_1405";
+other characters become `_` and the name is cut at 100 characters. Each text
+part becomes a recording named "<phrase> - Part 1", "Part 2", and so on. The
+phrase plays the parts in order with the pauses. Its description holds the
+voice and the script on one line, cut at 255 characters. You can reuse the phrase in other
 menus and edit it in **Applications > Phrases**.
 
 ### Names
 
-A greeting you don't name gets a descriptive name such as
+A recorded or text to speech greeting you don't name gets a descriptive name
+such as
 "Main Menu - Long Greeting - 2026-11-16 14:05", in the domain time zone.
 
 ### Remove or delete
@@ -168,12 +189,12 @@ Delete is refused while anything still plays the greeting, and the message
 lists what does. Checked places:
 
 - IVR menus (greetings, sounds, ringback) and menu options,
-- phrases,
+- phrases (when deleting a recording),
 - ring groups, call center queues, call flows, conference centers,
 - dialplans.
 
-Deleting a phrase also deletes the recordings made for it, unless something
-else uses them.
+Deleting a phrase also deletes the recordings made for it, if you may delete
+recordings and nothing else uses them.
 
 ## Schedules
 
@@ -188,17 +209,21 @@ listed in **Dialplan > Time Conditions**.
 2. Keep the suggested **Schedule Extension** (a random, unused 22 digit number).
    If `time_conditions > extension_range` is enabled, the suggestion is the
    first free number in that range instead.
-3. Add one or more **Rules** (see below). The menu answers while **any** rule
-   matches.
+3. Add one or more **Rules** (see below). A new schedule starts with one
+   one-time rule; **Add Rule** adds a weekly one. The menu answers while
+   **any** rule matches.
 4. Choose the **Fallback Destination**: where calls go when no rule matches.
-5. Click **Save**.
+5. Leave **Enabled** on true and click **Save**. The IVR menu itself must be
+   enabled to be scheduled.
 6. In **Dialplan > Inbound Routes**, set the destination of the number to the
    schedule; it is listed under Time Conditions.
 
 The page shows:
 
 - which inbound routes use the schedule,
-- whether it is **Active now**,
+- its status: **Active now**, **Not active now**, **Disabled**, or **Ended**
+  once all its rules are past one-time rules,
+- for each one-time rule, whether it starts later, is active or has ended,
 - the next date of every annual rule, so you can check holidays at a glance.
 
 **Remove Schedule** deletes the time condition. Inbound routes that pointed at
@@ -221,7 +246,10 @@ Each rule has a type and an optional label, such as "Thanksgiving":
     after" for the day after Thanksgiving.
 
   Either can be all day or from one time to another. The **US holiday preset**
-  list fills in the fields and the label for you.
+  list fills in the fields, ticks All day, and sets the label if it is empty.
+
+Labels are up to 64 characters. When a rule can't be saved, the message starts
+with its number, e.g. "Rule 2: …".
 
 Annual rules repeat every year by themselves; FreeSWITCH works out the floating
 dates, so there is nothing to update each year.
@@ -255,8 +283,9 @@ open hours.
 
 ### Times and time zones
 
-- Dates and times are in the domain time zone (**Default Settings** or
-  **Domain Settings > domain > time_zone**), shown next to the rules.
+- Dates and times are in the domain time zone (`domain > time_zone` in
+  Default or Domain Settings; a User Setting of the person saving overrides
+  it), shown next to the rules.
 - After changing the domain time zone, open the schedule and save it again.
 
 ## Limitations
