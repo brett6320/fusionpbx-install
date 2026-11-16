@@ -206,11 +206,13 @@ a phrase also deletes the recordings created for it (for users with
 An IVR schedule is a time condition with its own extension: calls sent to it
 reach the IVR menu inside the time window and the fallback outside it. Send
 calls to the schedule, not to the menu: in **Dialplan > Inbound Routes**,
-choose the schedule under Time Conditions. IVR Manager suggests the first free
-number in `time_conditions > extension_range` (e.g. `800-899` or
-`800-899,900-999`; upstream ships it disabled, so enable it for a suggestion),
-refuses a new number an extension or another dialplan entry of the domain
-already uses (an existing schedule keeps its number), and lists the inbound
+choose the schedule under Time Conditions. IVR Manager suggests a random,
+unused 22 digit number, as for a new IVR menu (see below; nobody needs to dial
+it), or the first free number in `time_conditions > extension_range` (e.g.
+`800-899` or `800-899,900-999`) when that setting is enabled (upstream ships it
+disabled). A new or changed number is refused when an extension or another
+dialplan entry of the domain already uses it, or an outbound route matches it
+(an existing schedule keeps its number). IVR Manager also lists the inbound
 routes pointing at the schedule, from Destinations and Dialplan > Inbound
 Routes.
 

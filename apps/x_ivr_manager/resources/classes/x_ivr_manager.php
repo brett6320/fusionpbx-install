@@ -40,9 +40,9 @@ class x_ivr_manager {
 	//time condition editor gives to the first custom group (time_condition_edit.php:1338)
 	const schedule_group = 500;
 
-	//length of the random extension of a new IVR menu, longer than the fixed length stock outbound route patterns
+	//length of the random extension of a new IVR menu or schedule, longer than the fixed length stock outbound route patterns
 	//match (the longest, 9 then 12 to 20 digits, matches up to 21)
-	const ivr_extension_length = 22;
+	const extension_length = 22;
 
 	/**
 	 * declare public variables
@@ -602,10 +602,11 @@ class x_ivr_manager {
 	}
 
 	/**
-	 * First unused number in the time condition extension range (time_conditions > extension_range, e.g. 800-899
-	 * or 800-899,900-999)
+	 * Suggested number for a new schedule: the first unused number in the time condition extension range
+	 * (time_conditions > extension_range, e.g. 800-899 or 800-899,900-999) when one is set, otherwise (or when
+	 * the range is full) a random one as for a new IVR menu. Numbers an outbound route matches are skipped.
 	 *
-	 * @return string empty when the range is unset, invalid or full
+	 * @return string empty when the lookup failed
 	 */
 	public function suggest_schedule_number() {
 		$ranges = [];
@@ -618,20 +619,21 @@ class x_ivr_manager {
 			$ranges[] = [(int)$matches[1], (int)$matches[2]];
 		}
 		if (empty($ranges) || $span > 100000) {
-			return '';
+			return $this->generate_extension();
 		}
 		$used = $this->used_numbers();
-		if ($used === false) {
+		$patterns = $this->outbound_route_patterns();
+		if ($used === false || $patterns === false) {
 			return '';
 		}
 		foreach ($ranges as [$first, $last]) {
 			for ($number = $first; $number <= $last; $number++) {
-				if (!isset($used[(string)$number])) {
+				if (!isset($used[(string)$number]) && $this->outbound_route_match((string)$number, $patterns) === null) {
 					return (string)$number;
 				}
 			}
 		}
-		return '';
+		return $this->generate_extension();
 	}
 
 	/**
@@ -685,14 +687,14 @@ class x_ivr_manager {
 	}
 
 	/**
-	 * A random, unused extension for a new IVR menu. Nobody needs to dial it: calls reach the menu from inbound
-	 * routes, schedules and other menus. A number an outbound route of the domain matches is skipped, so a call
+	 * A random, unused extension for a new IVR menu or schedule. Nobody needs to dial it: calls reach it from
+	 * inbound routes, schedules and other menus. A number an outbound route of the domain matches is skipped, so a call
 	 * sent to a disabled menu ends here instead of going out to a carrier; 22 digits is longer than the fixed
 	 * length stock patterns match, which leaves open ended ones such as a custom prefix (^9(\d*)$).
 	 *
 	 * @return string empty when the lookup failed or no number was found
 	 */
-	public function generate_ivr_extension() {
+	public function generate_extension() {
 		$used = $this->used_numbers();
 		$patterns = $this->outbound_route_patterns();
 		if ($used === false || $patterns === false) {
@@ -700,7 +702,7 @@ class x_ivr_manager {
 		}
 		for ($attempt = 0; $attempt < 50; $attempt++) {
 			$number = (string)random_int(1, 9);
-			for ($x = 1; $x < self::ivr_extension_length; $x++) {
+			for ($x = 1; $x < self::extension_length; $x++) {
 				$number .= (string)random_int(0, 9);
 			}
 			if (!isset($used[$number]) && $this->outbound_route_match($number, $patterns) === null) {
@@ -1775,7 +1777,7 @@ class x_ivr_manager {
 				return false;
 			}
 			//digits only, the number is placed in a ^...$ regex unescaped by the stock editor
-			if (!preg_match('/^[0-9]{1,20}$/', $dialplan_number)) {
+			if (!preg_match('/^[0-9]{1,32}$/', $dialplan_number)) {
 				$this->message = 'message-schedule_number_invalid';
 				return false;
 			}
@@ -1831,10 +1833,16 @@ class x_ivr_manager {
 			$this->number_used_by = null;
 			if ($action == 'add' || $dialplan_number !== (string)$existing['dialplan_number']) {
 				$this->number_used_by = $this->number_in_use($dialplan_number, $existing['dialplan_uuid'] ?? null);
-			}
-			if ($this->number_used_by !== null) {
-				$this->message = 'message-schedule_number_in_use';
-				return false;
+				if ($this->number_used_by !== null) {
+					$this->message = 'message-schedule_number_in_use';
+					return false;
+				}
+				//nor reach a carrier through an outbound route while the schedule is disabled
+				$this->number_used_by = $this->outbound_route_match($dialplan_number);
+				if ($this->number_used_by !== null) {
+					$this->message = 'message-schedule_number_routable';
+					return false;
+				}
 			}
 
 		//do not silently drop conditions added in the stock time condition editor

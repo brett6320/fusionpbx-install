@@ -108,7 +108,7 @@ $text['label-schedule_name']['en-us'] = "Name";
 
 $text['label-schedule_number']['en-us'] = "Schedule Extension";
 
-$text['description-schedule_number']['en-us'] = "A new, unused extension number for this schedule (digits only), suggested from the time condition range. This is not a destination: it is the number calls are sent to. In Dialplan > Inbound Routes, set the destination to this schedule (listed under Time Conditions) so calls follow it.";
+$text['description-schedule_number']['en-us'] = "A new, unused extension number for this schedule (digits only). A random 22 digit number that no outbound route matches is suggested, or the first free number in the time condition range when one is set. Nobody needs to dial it. This is not a destination: it is the number calls are sent to. In Dialplan > Inbound Routes, set the destination to this schedule (listed under Time Conditions) so calls follow it.";
 
 $text['label-schedule_start']['en-us'] = "Start";
 
@@ -132,7 +132,7 @@ $text['message-schedule_deleted']['en-us'] = "Schedule removed.";
 
 $text['message-schedule_name_required']['en-us'] = "A schedule name is required.";
 
-$text['message-schedule_number_invalid']['en-us'] = "The schedule number must contain digits only.";
+$text['message-schedule_number_invalid']['en-us'] = "The schedule number must contain digits only (up to 32).";
 
 $text['message-schedule_date_invalid']['en-us'] = "Enter a valid start and end date and time.";
 
@@ -227,6 +227,8 @@ $text['label-schedule_routes']['en-us'] = "Inbound routes using this schedule:";
 $text['label-schedule_routes_none']['en-us'] = "none yet. Calls reach the IVR menu by schedule only through this extension.";
 
 $text['message-schedule_number_in_use']['en-us'] = "Extension %s is already used by %s. Choose an unused number for the schedule.";
+
+$text['message-schedule_number_routable']['en-us'] = "Extension %s matches the outbound route %s, so calls to the schedule could go out to a carrier while it is disabled. Choose another number.";
 
 $text['button-play']['en-us'] = "Play";
 
