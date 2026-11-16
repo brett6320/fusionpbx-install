@@ -34,10 +34,15 @@ class x_ivr_manager {
 	//upstream application uuids
 	const ivr_menu_app_uuid = 'a5788e9b-58bc-bd1b-df59-fff5d51253ab';
 	const time_condition_app_uuid = '4b821450-926b-175a-af93-a03c441818b1';
+	const outbound_route_app_uuid = '8c914ec3-9fc0-8ab5-4cda-6c9288bdc9a3';
 
 	//dialplan detail group used for the schedule window, the same number the stock
 	//time condition editor gives to the first custom group (time_condition_edit.php:1338)
 	const schedule_group = 500;
+
+	//length of the random extension of a new IVR menu, longer than the fixed length stock outbound route patterns
+	//match (the longest, 9 then 12 to 20 digits, matches up to 21)
+	const ivr_extension_length = 22;
 
 	/**
 	 * declare public variables
@@ -627,6 +632,250 @@ class x_ivr_manager {
 			}
 		}
 		return '';
+	}
+
+	/**
+	 * Destination number patterns of the enabled outbound routes of the domain and the global ones
+	 *
+	 * @return array|false dialplan_name, pattern; false when the lookup failed
+	 */
+	private function outbound_route_patterns() {
+		$sql = "select d.dialplan_name, dd.dialplan_detail_data from v_dialplans as d, v_dialplan_details as dd ";
+		$sql .= "where dd.dialplan_uuid = d.dialplan_uuid ";
+		$sql .= "and d.app_uuid = :app_uuid ";
+		$sql .= "and cast(d.dialplan_enabled as text) = 'true' ";
+		$sql .= "and (dd.dialplan_detail_enabled is null or cast(dd.dialplan_detail_enabled as text) = 'true') ";
+		$sql .= "and dd.dialplan_detail_tag = 'condition' and dd.dialplan_detail_type = 'destination_number' ";
+		$sql .= "and ((d.domain_uuid = :domain_uuid and d.dialplan_context = :context) or d.domain_uuid is null or d.dialplan_context = 'global') ";
+		$parameters['app_uuid'] = self::outbound_route_app_uuid;
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['context'] = $this->domain_name;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		if ($rows === false) {
+			return false;
+		}
+		$patterns = [];
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			$patterns[] = ['dialplan_name' => (string)$row['dialplan_name'], 'pattern' => (string)$row['dialplan_detail_data']];
+		}
+		return $patterns;
+	}
+
+	/**
+	 * The outbound route that would take a call to the number if its own dialplan entry did not (a disabled menu,
+	 * or a route ordered before it). FreeSWITCH matches with PCRE, as preg_match does.
+	 *
+	 * @param string $number
+	 * @param array|false|null $patterns from outbound_route_patterns(), looked up when null
+	 * @return string|null the route name, or null
+	 */
+	public function outbound_route_match($number, $patterns = null) {
+		if ($patterns === null) {
+			$patterns = $this->outbound_route_patterns();
+		}
+		if ($patterns === false) {
+			return 'an unknown outbound route (the lookup failed)';
+		}
+		foreach ($patterns as $row) {
+			if ($row['pattern'] !== '' && @preg_match("\x01".$row['pattern']."\x01", (string)$number) === 1) {
+				return $row['dialplan_name'];
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * A random, unused extension for a new IVR menu. Nobody needs to dial it: calls reach the menu from inbound
+	 * routes, schedules and other menus. A number an outbound route of the domain matches is skipped, so a call
+	 * sent to a disabled menu ends here instead of going out to a carrier; 22 digits is longer than the fixed
+	 * length stock patterns match, which leaves open ended ones such as a custom prefix (^9(\d*)$).
+	 *
+	 * @return string empty when the lookup failed or no number was found
+	 */
+	public function generate_ivr_extension() {
+		$used = $this->used_numbers();
+		$patterns = $this->outbound_route_patterns();
+		if ($used === false || $patterns === false) {
+			return '';
+		}
+		for ($attempt = 0; $attempt < 50; $attempt++) {
+			$number = (string)random_int(1, 9);
+			for ($x = 1; $x < self::ivr_extension_length; $x++) {
+				$number .= (string)random_int(0, 9);
+			}
+			if (!isset($used[$number]) && $this->outbound_route_match($number, $patterns) === null) {
+				return $number;
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Whether the domain can add another IVR menu (limit > ivr_menus, as upstream checks it)
+	 *
+	 * @return bool|null null when the lookup failed
+	 */
+	public function ivr_menu_limit_ok() {
+		$limit = $this->settings->get('limit', 'ivr_menus');
+		if ($limit === null || $limit === '') {
+			return true;
+		}
+		$sql = "select count(*) from v_ivr_menus where domain_uuid = :domain_uuid ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$total = $this->database->select($sql, $parameters, 'column');
+		if ($total === false) {
+			return null;
+		}
+		return (int)$total < (int)$limit;
+	}
+
+	/**
+	 * Create an IVR menu with upstream's defaults for a new menu, and its dialplan entry
+	 *
+	 * Mirrors app/ivr_menus/ivr_menu_edit.php (add): the defaults at 48-56, 96-102 and 716-759 and the dialplan
+	 * at 402-454. Unlike upstream, the long greeting may be empty: it is set afterwards in IVR Manager (until then
+	 * the menu plays nothing and ends after its timeouts), as are the options.
+	 *
+	 * @param array $ivr_menu ivr_menu_name, ivr_menu_extension, ivr_menu_description
+	 * @return string|false the ivr menu uuid; on failure $this->message holds a text key
+	 */
+	public function create_ivr_menu(array $ivr_menu) {
+		$this->message = null;
+		$this->number_used_by = null;
+
+		//validate
+		$name = trim((string)($ivr_menu['ivr_menu_name'] ?? ''));
+		$extension = trim((string)($ivr_menu['ivr_menu_extension'] ?? ''));
+		$description = trim((string)($ivr_menu['ivr_menu_description'] ?? ''));
+		if ($name === '' || !mb_check_encoding($name, 'UTF-8') || mb_strlen($name, 'UTF-8') > 255) {
+			$this->message = 'message-ivr_name_invalid';
+			return false;
+		}
+		if (!preg_match('/^[0-9]{1,32}$/', $extension)) {
+			$this->message = 'message-ivr_extension_invalid';
+			return false;
+		}
+		if (!mb_check_encoding($description, 'UTF-8') || mb_strlen($description, 'UTF-8') > 255) {
+			$this->message = 'message-ivr_description_invalid';
+			return false;
+		}
+		$this->number_used_by = $this->number_in_use($extension);
+		if ($this->number_used_by !== null) {
+			$this->message = 'message-ivr_extension_in_use';
+			return false;
+		}
+		$this->number_used_by = $this->outbound_route_match($extension);
+		if ($this->number_used_by !== null) {
+			$this->message = 'message-ivr_extension_routable';
+			return false;
+		}
+
+		//the ivr menu limit of the domain
+		$limit_ok = $this->ivr_menu_limit_ok();
+		if ($limit_ok !== true) {
+			$this->message = $limit_ok === null ? 'message-ivr_create_failed' : 'message-ivr_limit';
+			return false;
+		}
+
+		//the default ringback, kept only when valid as upstream does
+		$ringback = (string)$this->settings->get('ivr_menu', 'default_ringback', 'local_stream://default');
+		$ringbacks = new ringbacks(['database' => $this->database, 'domain_uuid' => $this->domain_uuid, 'domain_name' => $this->domain_name]);
+		if ($ringback !== '' && !$ringbacks->valid($ringback)) {
+			$ringback = '';
+		}
+
+		$ivr_menu_uuid = uuid();
+		$dialplan_uuid = uuid();
+		$context = $this->domain_name;
+
+		//upstream's defaults for a new menu: no language (dialect and voice as the editor stores them), the
+		//optional settings or their fallbacks, the default ringback, and no greeting or exit action yet
+		$array['ivr_menus'][0]['ivr_menu_uuid'] = $ivr_menu_uuid;
+		$array['ivr_menus'][0]['domain_uuid'] = $this->domain_uuid;
+		$array['ivr_menus'][0]['dialplan_uuid'] = $dialplan_uuid;
+		$array['ivr_menus'][0]['ivr_menu_name'] = $name;
+		$array['ivr_menus'][0]['ivr_menu_extension'] = $extension;
+		$array['ivr_menus'][0]['ivr_menu_language'] = '';
+		$array['ivr_menus'][0]['ivr_menu_dialect'] = 'us';
+		$array['ivr_menus'][0]['ivr_menu_voice'] = 'callie';
+		$array['ivr_menus'][0]['ivr_menu_greet_long'] = '';
+		$array['ivr_menus'][0]['ivr_menu_greet_short'] = '';
+		$array['ivr_menus'][0]['ivr_menu_invalid_sound'] = '';
+		$array['ivr_menus'][0]['ivr_menu_exit_sound'] = '';
+		$array['ivr_menus'][0]['ivr_menu_pin_number'] = '';
+		$array['ivr_menus'][0]['ivr_menu_confirm_macro'] = '';
+		$array['ivr_menus'][0]['ivr_menu_confirm_key'] = '';
+		$array['ivr_menus'][0]['ivr_menu_tts_engine'] = 'flite';
+		$array['ivr_menus'][0]['ivr_menu_tts_voice'] = 'rms';
+		$array['ivr_menus'][0]['ivr_menu_confirm_attempts'] = $this->settings->get('ivr_menu', 'confirm_attempts') ?: '1';
+		$array['ivr_menus'][0]['ivr_menu_timeout'] = '3000';
+		$array['ivr_menus'][0]['ivr_menu_inter_digit_timeout'] = $this->settings->get('ivr_menu', 'inter_digit_timeout') ?: '2000';
+		$array['ivr_menus'][0]['ivr_menu_max_failures'] = $this->settings->get('ivr_menu', 'max_failures') ?: '1';
+		$array['ivr_menus'][0]['ivr_menu_max_timeouts'] = $this->settings->get('ivr_menu', 'max_timeouts') ?: '1';
+		$array['ivr_menus'][0]['ivr_menu_digit_len'] = '5';
+		$array['ivr_menus'][0]['ivr_menu_direct_dial'] = 'false';
+		if ($ringback !== '') {
+			$array['ivr_menus'][0]['ivr_menu_ringback'] = $ringback;
+		}
+		$array['ivr_menus'][0]['ivr_menu_cid_prefix'] = '';
+		$array['ivr_menus'][0]['ivr_menu_context'] = $context;
+		$array['ivr_menus'][0]['ivr_menu_enabled'] = 'true';
+		$array['ivr_menus'][0]['ivr_menu_description'] = $description;
+
+		//build the xml dialplan
+		$dialplan_xml = "<extension name=\"".xml::sanitize($name)."\" continue=\"false\" uuid=\"".xml::sanitize($dialplan_uuid)."\">\n";
+		$dialplan_xml .= "	<condition field=\"destination_number\" expression=\"^".xml::sanitize($extension)."\$\">\n";
+		$dialplan_xml .= "		<action application=\"ring_ready\" data=\"\"/>\n";
+		if ($this->settings->get('ivr_menu', 'answer', false)) {
+			$dialplan_xml .= "		<action application=\"answer\" data=\"\"/>\n";
+		}
+		$dialplan_xml .= "		<action application=\"sleep\" data=\"1000\"/>\n";
+		$dialplan_xml .= "		<action application=\"set\" data=\"hangup_after_bridge=true\"/>\n";
+		if ($ringback !== '') {
+			$dialplan_xml .= "		<action application=\"set\" data=\"ringback=".$ringback."\"/>\n";
+			$dialplan_xml .= "		<action application=\"set\" data=\"transfer_ringback=".$ringback."\"/>\n";
+		}
+		$dialplan_xml .= "		<action application=\"set\" data=\"ivr_menu_uuid=".xml::sanitize($ivr_menu_uuid)."\"/>\n";
+		if ($this->settings->get('ivr_menu', 'application') == 'lua') {
+			$dialplan_xml .= "		<action application=\"lua\" data=\"ivr_menu.lua\"/>\n";
+		}
+		else {
+			$dialplan_xml .= "		<action application=\"ivr\" data=\"".xml::sanitize($ivr_menu_uuid)."\"/>\n";
+		}
+		$dialplan_xml .= "	</condition>\n";
+		$dialplan_xml .= "</extension>\n";
+
+		//build the dialplan array
+		$array['dialplans'][0]['domain_uuid'] = $this->domain_uuid;
+		$array['dialplans'][0]['dialplan_uuid'] = $dialplan_uuid;
+		$array['dialplans'][0]['dialplan_name'] = $name;
+		$array['dialplans'][0]['dialplan_number'] = $extension;
+		$array['dialplans'][0]['dialplan_context'] = $context;
+		$array['dialplans'][0]['dialplan_continue'] = 'false';
+		$array['dialplans'][0]['dialplan_xml'] = $dialplan_xml;
+		$array['dialplans'][0]['dialplan_order'] = '101';
+		$array['dialplans'][0]['dialplan_enabled'] = 'true';
+		$array['dialplans'][0]['dialplan_description'] = $description;
+		$array['dialplans'][0]['app_uuid'] = self::ivr_menu_app_uuid;
+
+		//save with temporary permissions, access is controlled by x_ivr_manager_add
+		$p = permissions::new();
+		$p->add('ivr_menu_add', 'temp');
+		$p->add('dialplan_add', 'temp');
+		$this->database->save($array);
+		$p->delete('ivr_menu_add', 'temp');
+		$p->delete('dialplan_add', 'temp');
+		unset($array);
+
+		//confirm the menu was stored
+		$created = $this->get_ivr_menu($ivr_menu_uuid);
+		if (empty($created)) {
+			$this->message = 'message-ivr_create_failed';
+			return false;
+		}
+
+		$this->clear_ivr_cache($created);
+		return $ivr_menu_uuid;
 	}
 
 	/**

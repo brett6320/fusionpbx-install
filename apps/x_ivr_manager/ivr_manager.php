@@ -66,6 +66,9 @@
 	echo "<div class='action_bar' id='action_bar'>\n";
 	echo "	<div class='heading'><b>".$text['title-ivr_manager']."</b><div class='count'>".number_format(!empty($ivr_menus) ? count($ivr_menus) : 0)."</div></div>\n";
 	echo "	<div class='actions'>\n";
+	if (permission_exists('x_ivr_manager_add')) {
+		echo button::create(['type'=>'button','label'=>$text['button-add'],'icon'=>$settings->get('theme', 'button_icon_add'),'id'=>'btn_add','link'=>'ivr_manager_add.php']);
+	}
 	echo "		<form id='form_search' class='inline' method='get'>\n";
 	echo "		<input type='text' class='txt list-search' name='search' id='search' value=\"".escape($search)."\" placeholder=\"".$text['label-search']."\">";
 	echo button::create(['label'=>$text['button-search'],'icon'=>$settings->get('theme', 'button_icon_search'),'type'=>'submit','id'=>'btn_search']);
