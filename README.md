@@ -173,6 +173,15 @@ language, so the picker refuses other phrases. A sub-menu keeps the language of
 the menu callers came from: a phrase for a sub-menu in a different language
 stays silent.
 
+## Email templates
+
+The installer rewords upstream's English email templates (voicemail,
+transcription, missed call, fax, emergency call, email test) in Advanced >
+Email Templates, and fixes the fax subject that read "Subject, Fax to: …
+SENT". A template is replaced only while it still has upstream's exact text,
+so templates edited in the UI are left alone. Carrier ACL alerts use the
+subject prefix `[Carrier ACL]`.
+
 ## Carrier credentials and encryption
 
 Setting up a carrier, with Telnyx as the example: [docs/carrier-credentials.md](docs/carrier-credentials.md).

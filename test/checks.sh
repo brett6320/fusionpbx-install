@@ -35,6 +35,12 @@ check "codec order seeded" test "$(db "select string_agg(default_setting_value, 
 #dark theme is the default (core/themes: Cobalt Blue)
 check "dark theme is the default" test "$(db "select default_setting_value from v_default_settings where default_setting_uuid='b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' and default_setting_enabled")" = "eda762b3-e356-4225-a394-38b5f092fd44"
 
+#upstream's English email templates reworded (x_local_defaults); the fax subject no longer reads "Subject, Fax to: ..."
+# shellcheck disable=SC2016  # FreeSWITCH variables, literal
+check "voicemail email reworded" test "$(db "select template_subject from v_email_templates where email_template_uuid = 'fbd0c8ea-6adb-4f8b-92cf-00e9087e3568'")" = 'New voicemail from ${caller_id_name} (${caller_id_number}), ${message_duration}'
+# shellcheck disable=SC2016
+check "fax email reworded" test "$(db "select template_subject from v_email_templates where email_template_uuid = 'b1eefbfc-c008-4c82-b93f-6a6df237aeaa'")" = 'Fax to ${number_dialed} sent'
+
 #our apps: copied, syntactically valid on the target PHP, registered
 for app in /usr/src/x-install/apps/x_*/; do
 	name=$(basename "$app")

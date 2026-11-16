@@ -112,6 +112,31 @@ if ($domains_processed == 1) {
 			unset($sql, $parameters);
 		}
 
+	//reword upstream's English email templates (resources/email_templates.php). A template is replaced only while
+	//it still has upstream's exact subject and body (trimmed: database::save trims what upstream inserts), so an
+	//admin's edits are kept. Upstream's installer has inserted them before this layer runs; a missing row is left
+	//to core/email_templates, which inserts it (with upstream's enabled flag) and the next upgrade rewords it
+		$email_templates = require __DIR__.'/resources/email_templates.php';
+		foreach ($email_templates as $email_template_uuid => $email_template) {
+			$sql = "select template_subject, template_body from v_email_templates ";
+			$sql .= "where email_template_uuid = :email_template_uuid ";
+			$parameters['email_template_uuid'] = $email_template_uuid;
+			$row = $database->select($sql, $parameters, 'row');
+			unset($sql, $parameters);
+			if (empty($row) || trim((string)$row['template_subject']) !== trim($email_template['old_subject']) || trim((string)$row['template_body']) !== trim($email_template['old_body'])) {
+				continue;
+			}
+			$sql = "update v_email_templates ";
+			$sql .= "set template_subject = :template_subject, template_body = :template_body, update_date = now() ";
+			$sql .= "where email_template_uuid = :email_template_uuid ";
+			$parameters['email_template_uuid'] = $email_template_uuid;
+			$parameters['template_subject'] = trim($email_template['subject']);
+			$parameters['template_body'] = trim($email_template['body']);
+			$database->execute($sql, $parameters);
+			unset($sql, $parameters);
+		}
+		unset($email_templates, $email_template, $email_template_uuid, $row);
+
 }
 
 ?>
