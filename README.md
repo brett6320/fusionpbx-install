@@ -108,6 +108,8 @@ replaced `php.ini`.
 
 ## Carrier credentials and encryption
 
+Setting up a carrier, with Telnyx as the example: [docs/carrier-credentials.md](docs/carrier-credentials.md).
+
 Carrier credentials are encrypted in our own store (libsodium). FreeSWITCH
 needs them in plaintext, so plaintext copies still exist in `v_gateways`, the
 generated gateway XML and FusionPBX's transaction log. The keys are in
