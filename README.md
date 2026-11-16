@@ -92,15 +92,6 @@ A default install has a self-signed certificate, which most phones reject.
 Install a trusted certificate (upstream ships a Let's Encrypt script) or turn
 off certificate checks on the phones.
 
-## Email templates
-
-The installer rewords upstream's English email templates (voicemail,
-transcription, missed call, fax, emergency call, email test) in Advanced >
-Email Templates, and fixes the fax subject that read "Subject, Fax to: …
-SENT". A template is replaced only while it still has upstream's exact text,
-so templates edited in the UI are left alone. Carrier ACL alerts use the
-subject prefix `[Carrier ACL]`.
-
 ## Theme
 
 The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,
@@ -156,6 +147,15 @@ A phrase only plays when it is enabled and its language matches the call's
 language, so the picker refuses other phrases. A sub-menu keeps the language of
 the menu callers came from: a phrase for a sub-menu in a different language
 stays silent.
+
+## Email templates
+
+The installer rewords upstream's English email templates (voicemail,
+transcription, missed call, fax, emergency call, email test) in Advanced >
+Email Templates, and fixes the fax subject that read "Subject, Fax to: …
+SENT". A template is replaced only while it still has upstream's exact text,
+so templates edited in the UI are left alone. Carrier ACL alerts use the
+subject prefix `[Carrier ACL]`.
 
 ## Carrier credentials and encryption
 
