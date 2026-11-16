@@ -17,6 +17,10 @@ case "$mode" in
 esac
 
 [ -f "$fusionpbx_dir/core/upgrade/upgrade.php" ] || die "FusionPBX not found at $fusionpbx_dir."
+#checked before anything is stopped or changed
+php_ini="/etc/php/${php_version}/fpm/php.ini"
+[[ "${session_lifetime:-}" =~ ^[1-9][0-9]*$ ]] || die "session_lifetime in config.sh must be a number of seconds."
+[ -f "$php_ini" ] || die "Missing $php_ini."
 
 #our workers must not run new app code against the old schema mid-update;
 #they are re-enabled at the end
@@ -67,7 +71,15 @@ fusionpbx_upgrade --schema
 fusionpbx_upgrade --defaults
 fusionpbx_upgrade --permissions
 
-#settings are cached in APCu with no TTL; app_defaults.php may have written some
+#web login lifetime: FusionPBX has no setting for it, a login lasts while PHP keeps its session file.
+#Debian's phpsessionclean deletes session files older than session.gc_maxlifetime, read from each SAPI's php.ini
+if grep -qE '^[;[:space:]]*session\.gc_maxlifetime[[:space:]]*=' "$php_ini"; then
+	sed -i -E "s/^[;[:space:]]*session\.gc_maxlifetime[[:space:]]*=.*/session.gc_maxlifetime = ${session_lifetime}/" "$php_ini"
+else
+	printf 'session.gc_maxlifetime = %s\n' "$session_lifetime" >> "$php_ini"
+fi
+
+#settings are cached in APCu with no TTL; app_defaults.php may have written some. Also applies session.gc_maxlifetime
 systemctl restart "php${php_version}-fpm"
 
 #restoring the menu deletes and rebuilds every menu item, losing admin edits

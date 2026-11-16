@@ -48,6 +48,9 @@ while IFS= read -r table; do
 	check "table $table exists" test "$(db "select to_regclass('public.$table') is not null")" = "t"
 done < <(grep -rhoE "\['db'\]\[\\\$y\]\['table'\]\['name'\] = \"v_x_[a-z0-9_]+\"" /usr/src/x-install/apps | grep -oE 'v_x_[a-z0-9_]+' | sort -u)
 
+#web login lifetime, read the way phpsessionclean reads it
+check "php-fpm session lifetime is $session_lifetime" test "$(PHP_INI_SCAN_DIR="/etc/php/$php_version/fpm/conf.d" "php$php_version" -c "/etc/php/$php_version/fpm/php.ini" -r 'echo ini_get("session.gc_maxlifetime");')" = "$session_lifetime"
+
 #time sync
 check "chrony active" systemctl is-active chrony
 check "clock sync timer enabled" systemctl is-enabled x-freeswitch-clock-sync.timer

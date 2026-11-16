@@ -28,6 +28,7 @@ application_sip_trunks=false            # Not needed: inbound-only, carrier gate
 
 # Features.
 timesync_interval=15                     # Minutes between FreeSWITCH clock resyncs
+session_lifetime=28800                   # Seconds a web login lasts without activity (8 hours)
 
 # Nightly backups (x-backup). Restore with restore.sh; see README "Backup and restore".
 backup_dir=/var/backups/x-install
