@@ -11,13 +11,13 @@
 		$apps[$x]['description']['en-us'] = "Applies this installation's defaults once, on first install, without overriding later admin changes.";
 
 	//default settings: the codec order of the provisioning templates, in Advanced > Default Settings > Provision.
-	//Codec names: OPUS, G.722, PCMU, PCMA, G.723.1, G.729A/B, G.726-32, iLBC. A template skips codecs its phone lacks.
+	//Codec names: G.722, PCMU, PCMA, G.723.1, G.729A/B, G.726-32, iLBC, OPUS. A template skips codecs its phone lacks.
 		$y = 0;
 		$apps[$x]['default_settings'][$y]['default_setting_uuid'] = "40faf93b-c5dd-446b-95c7-1f105de10d43";
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_1";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "OPUS";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.722";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 1 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;
@@ -25,7 +25,7 @@
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_2";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.722";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "PCMU";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 2 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;
@@ -33,7 +33,7 @@
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_3";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "PCMU";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "PCMA";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 3 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;
@@ -41,7 +41,7 @@
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_4";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "PCMA";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.723.1";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 4 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;
@@ -49,7 +49,7 @@
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_5";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.723.1";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.729A/B";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 5 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;
@@ -57,7 +57,7 @@
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_6";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.729A/B";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.726-32";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 6 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;
@@ -65,7 +65,7 @@
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_7";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "G.726-32";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "iLBC";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 7 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;
@@ -73,7 +73,7 @@
 		$apps[$x]['default_settings'][$y]['default_setting_category'] = "provision";
 		$apps[$x]['default_settings'][$y]['default_setting_subcategory'] = "x_codec_8";
 		$apps[$x]['default_settings'][$y]['default_setting_name'] = "text";
-		$apps[$x]['default_settings'][$y]['default_setting_value'] = "iLBC";
+		$apps[$x]['default_settings'][$y]['default_setting_value'] = "OPUS";
 		$apps[$x]['default_settings'][$y]['default_setting_enabled'] = "true";
 		$apps[$x]['default_settings'][$y]['default_setting_description'] = "Codec 8 of the phone codec order (provision templates). Empty skips the slot.";
 		$y++;

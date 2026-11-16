@@ -96,7 +96,7 @@ off certificate checks on the phones.
 
 One codec order for every phone: **Advanced > Default Settings > Provision >
 `x_codec_1` to `x_codec_8`**, highest priority first. The installer seeds
-OPUS, G.722, PCMU, PCMA, G.723.1, G.729A/B, G.726-32, iLBC; changes made there
+G.722, PCMU, PCMA, G.723.1, G.729A/B, G.726-32, iLBC, OPUS; changes made there
 are kept on upgrade. Codec names: `OPUS`, `G.722`, `PCMU`, `PCMA`, `G.723.1`,
 `G.729A/B`, `G.726-32`, `iLBC`; an empty value skips the slot.
 
