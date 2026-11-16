@@ -316,3 +316,22 @@ fetching".
   failed.
 - A bad image can brick a phone; the phone checks the vendor signature, we
   don't. Rollouts limit the blast radius.
+
+## 6. Known limitations
+
+- A Grandstream release's model list comes from its file name (e.g.
+  `grp2600fw.bin` gives `GRP2600`, while phones report `GRP2612`) and can't
+  be edited. If it's wrong, rollouts never mark those phones done; the
+  release can't be re-imported (duplicate) or deleted while in use. Fix by
+  moving targets off it, deleting it, and importing again.
+- Grandstream versions are typed by the admin and not checked against the
+  file. A typo means no device reaches done (each gets one reboot, then
+  failed), and Finish still makes the release the domain default. Check the
+  version on one phone in a first small batch.
+- The 2-minute firmware timer holds the overlay lock while it analyzes every
+  domain, alongside the wallpaper sync. Fine at current sizes; lock
+  contention on large installs.
+- During `upgrade.sh`, apps are copied before the schema update. For those
+  seconds, a manual reboot queued in Endpoint Manager can fail silently
+  (the log insert names the new `firmware_rollout_uuid` column). The same
+  window exists for other apps' schema changes.
