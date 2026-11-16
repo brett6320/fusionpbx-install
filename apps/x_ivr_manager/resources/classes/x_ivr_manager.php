@@ -177,6 +177,315 @@ class x_ivr_manager {
 	}
 
 	/**
+	 * True when the upstream phrases app is installed
+	 *
+	 * @return bool
+	 */
+	public static function phrases_installed() {
+		return file_exists(dirname(__DIR__, 4).'/app/phrases/app_config.php');
+	}
+
+	/**
+	 * Recordings of the domain, for the greeting picker
+	 *
+	 * @return array recording_name, recording_filename
+	 */
+	public function get_recordings() {
+		$sql = "select recording_name, recording_filename from v_recordings ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "order by recording_name asc ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		return is_array($rows) ? $rows : [];
+	}
+
+	/**
+	 * Phrases of the domain, for the greeting picker
+	 *
+	 * @return array phrase_uuid, phrase_name, phrase_language, phrase_enabled
+	 */
+	public function get_phrases() {
+		if (!self::phrases_installed()) {
+			return [];
+		}
+		$sql = "select phrase_uuid, phrase_name, phrase_language, phrase_enabled from v_phrases ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "order by phrase_name asc ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		return is_array($rows) ? $rows : [];
+	}
+
+	/**
+	 * Get a phrase that belongs to the domain
+	 *
+	 * @param string $phrase_uuid
+	 * @return array|null
+	 */
+	public function get_phrase($phrase_uuid) {
+		if (!is_uuid($phrase_uuid) || !self::phrases_installed()) {
+			return null;
+		}
+		$sql = "select phrase_uuid, phrase_name, phrase_language, phrase_enabled from v_phrases ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "and phrase_uuid = :phrase_uuid ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['phrase_uuid'] = $phrase_uuid;
+		$row = $this->database->select($sql, $parameters, 'row');
+		return is_array($row) && !empty($row) ? $row : null;
+	}
+
+	/**
+	 * Set a greeting to an existing recording or phrase of the domain
+	 *
+	 * @param array $ivr_menu the ivr menu row
+	 * @param string $type greet_long or greet_short
+	 * @param string $value recording file name, or phrase:<uuid>
+	 * @return bool
+	 */
+	public function select_greeting(array $ivr_menu, $type, $value) {
+		$value = (string)$value;
+		if (strpos($value, 'phrase:') === 0) {
+			if ($this->get_phrase(substr($value, 7)) === null) {
+				return false;
+			}
+		}
+		else {
+			$found = false;
+			foreach ($this->get_recordings() as $row) {
+				if ($row['recording_filename'] === $value) {
+					$found = true;
+					break;
+				}
+			}
+			if (!$found || $value !== basename($value)) {
+				return false;
+			}
+		}
+		return $this->set_greeting($ivr_menu, $type, $value);
+	}
+
+	/**
+	 * Language the phrase is played in: the first part of the IVR language, as
+	 * the languages xml handler matches phrase_language to the channel language
+	 *
+	 * @param array $ivr_menu
+	 * @return string e.g. en
+	 */
+	public function phrase_language(array $ivr_menu) {
+		$language = (string)($ivr_menu['ivr_menu_language'] ?? '');
+		$language = explode('/', $language)[0];
+		if ($language === '') {
+			$language = (string)$this->settings->get('domain', 'language', 'en');
+			$language = explode('-', $language)[0];
+		}
+		return preg_match('/^[a-z]{2,3}$/', $language) ? $language : 'en';
+	}
+
+	/**
+	 * Create a phrase from text (Google Text-to-Speech) and pauses
+	 *
+	 * Each text part becomes a recording of the domain, so it can be reused and
+	 * played back from Recordings. The phrase plays them in order.
+	 *
+	 * @param array $ivr_menu the ivr menu row
+	 * @param array $phrase phrase_name, voice, speed, parts (each type text|pause and value), greeting_type (greet_long, greet_short or empty)
+	 * @return string|false the phrase uuid; on failure $this->message holds a text key
+	 */
+	public function create_phrase(array $ivr_menu, array $phrase) {
+		$this->message = null;
+		if (!self::phrases_installed()) {
+			$this->message = 'message-phrase_app_missing';
+			return false;
+		}
+		$tts = new x_ivr_manager_google_tts($this->settings);
+		if (!$tts->enabled()) {
+			$this->message = 'message-phrase_tts_disabled';
+			return false;
+		}
+
+		//name: upstream phrase names have no spaces or quotes (phrase_edit.php)
+		$phrase_name = str_replace([' ', "'", '"', '`'], ['_', '', '', ''], trim((string)($phrase['phrase_name'] ?? '')));
+		$phrase_name = substr($phrase_name, 0, 255);
+		if ($phrase_name === '') {
+			$this->message = 'message-phrase_name_required';
+			return false;
+		}
+		$voice = (string)($phrase['voice'] ?? '');
+		if (!x_ivr_manager_google_tts::valid_voice($voice)) {
+			$this->message = 'message-phrase_voice_invalid';
+			return false;
+		}
+		$speed = (float)($phrase['speed'] ?? 1.0);
+
+		//parts: text or a pause of 0.1 to 10 seconds, at most 20
+		$parts = [];
+		foreach ((array)($phrase['parts'] ?? []) as $part) {
+			$type = $part['type'] ?? '';
+			$value = trim((string)($part['value'] ?? ''));
+			if ($value === '') {
+				continue;
+			}
+			if ($type === 'text') {
+				if (strlen($value) > x_ivr_manager_google_tts::max_text_bytes) {
+					$this->message = 'message-phrase_text_invalid';
+					return false;
+				}
+				$parts[] = ['type' => 'text', 'value' => $value];
+			}
+			else if ($type === 'pause' && is_numeric($value) && (float)$value >= 0.1 && (float)$value <= 10) {
+				$parts[] = ['type' => 'pause', 'value' => (int)round((float)$value * 1000)];
+			}
+			else {
+				$this->message = 'message-phrase_part_invalid';
+				return false;
+			}
+		}
+		if (count($parts) > 20) {
+			$this->message = 'message-phrase_too_many_parts';
+			return false;
+		}
+		$has_text = false;
+		foreach ($parts as $part) {
+			$has_text = $has_text || $part['type'] === 'text';
+		}
+		if (!$has_text) {
+			$this->message = 'message-phrase_text_required';
+			return false;
+		}
+
+		if (!$this->recording_path_create()) {
+			$this->message = 'message-phrase_tts_failed';
+			return false;
+		}
+		$sample_rate = (int)$this->settings->get('x_ivr_manager', 'recording_sample_rate', 8000);
+		$base64 = $this->settings->get('recordings', 'storage_type', '') == 'base64';
+
+		//synthesize every text part first, so nothing is saved when one fails
+		$files = [];
+		$n = 0;
+		foreach ($parts as $index => $part) {
+			if ($part['type'] !== 'text') {
+				continue;
+			}
+			$n++;
+			$recording_name = $phrase_name.'-'.$n;
+			$filename = $this->recording_filename($recording_name, 'wav');
+			$path = $this->recording_path().'/'.$filename;
+			if (file_exists($path) || !$tts->synthesize($part['value'], $voice, $speed, $sample_rate, $path)) {
+				foreach ($files as $file) {
+					unlink($this->recording_path().'/'.$file['filename']);
+				}
+				$this->message = $tts->message ?? 'message-phrase_tts_failed';
+				return false;
+			}
+			$files[$index] = ['filename' => $filename, 'recording_name' => $recording_name, 'message' => $part['value']];
+		}
+
+		//add the recordings
+		$recording_uuids = [];
+		foreach ($files as $file) {
+			$recording['recording_filename'] = $file['filename'];
+			$recording['recording_name'] = $file['recording_name'];
+			$recording['recording_voice'] = $voice;
+			$recording['recording_speed'] = (string)$speed;
+			$recording['recording_message'] = $file['message'];
+			$recording['recording_description'] = 'Phrase '.$phrase_name;
+			$recording_uuid = $this->add_recording($recording);
+			if ($recording_uuid === false) {
+				$this->remove_recordings($recording_uuids, $files);
+				$this->message = 'message-phrase_save_failed';
+				return false;
+			}
+			$recording_uuids[] = $recording_uuid;
+		}
+
+		//build the phrase, mirrors app/phrases/phrase_edit.php: one group, action tags
+		$phrase_uuid = uuid();
+		$language = $this->phrase_language($ivr_menu);
+		$array['phrases'][0]['domain_uuid'] = $this->domain_uuid;
+		$array['phrases'][0]['phrase_uuid'] = $phrase_uuid;
+		$array['phrases'][0]['phrase_name'] = $phrase_name;
+		$array['phrases'][0]['phrase_language'] = $language;
+		$array['phrases'][0]['phrase_enabled'] = 'true';
+		$array['phrases'][0]['phrase_description'] = 'Google Text-to-Speech, '.$voice;
+		$order = 0;
+		foreach ($parts as $index => $part) {
+			$order += 5;
+			$detail['phrase_detail_uuid'] = uuid();
+			$detail['phrase_uuid'] = $phrase_uuid;
+			$detail['domain_uuid'] = $this->domain_uuid;
+			$detail['phrase_detail_order'] = str_pad((string)$order, 3, '0', STR_PAD_LEFT);
+			$detail['phrase_detail_tag'] = 'action';
+			$detail['phrase_detail_group'] = '0';
+			if ($part['type'] === 'text') {
+				$filename = $files[$index]['filename'];
+				$detail['phrase_detail_function'] = 'play-file';
+				$detail['phrase_detail_data'] = $base64 ? '${lua streamfile.lua '.$filename.'}' : $this->recording_path().'/'.$filename;
+			}
+			else {
+				$detail['phrase_detail_function'] = 'execute';
+				$detail['phrase_detail_data'] = 'sleep('.$part['value'].')';
+			}
+			$array['phrase_details'][] = $detail;
+		}
+
+		$p = permissions::new();
+		$p->add('phrase_add', 'temp');
+		$p->add('phrase_detail_add', 'temp');
+		$result = $this->database->save($array);
+		$p->delete('phrase_add', 'temp');
+		$p->delete('phrase_detail_add', 'temp');
+		unset($array);
+		if ($result === false) {
+			$this->remove_recordings($recording_uuids, $files);
+			$this->message = 'message-phrase_save_failed';
+			return false;
+		}
+
+		//clear the phrase cache, the key languages.lua uses and the one phrase_edit.php clears
+		$cache = new cache;
+		$cache->delete('languages:'.$language.':'.$phrase_uuid);
+		$cache->delete('languages:'.$language.'.'.$phrase_uuid);
+
+		//set the greeting
+		$greeting_type = $phrase['greeting_type'] ?? '';
+		if (in_array($greeting_type, ['greet_long', 'greet_short'], true)) {
+			if (!$this->set_greeting($ivr_menu, $greeting_type, 'phrase:'.$phrase_uuid)) {
+				$this->message = 'message-phrase_greeting_failed';
+				return false;
+			}
+		}
+		return $phrase_uuid;
+	}
+
+	/**
+	 * Remove recordings created for a phrase that could not be saved
+	 *
+	 * @param array $recording_uuids
+	 * @param array $files filename entries
+	 */
+	private function remove_recordings(array $recording_uuids, array $files) {
+		if (!empty($recording_uuids)) {
+			foreach ($recording_uuids as $i => $uuid) {
+				$array['recordings'][$i]['recording_uuid'] = $uuid;
+				$array['recordings'][$i]['domain_uuid'] = $this->domain_uuid;
+			}
+			$p = permissions::new();
+			$p->add('recording_delete', 'temp');
+			$this->database->delete($array);
+			$p->delete('recording_delete', 'temp');
+			unset($array);
+		}
+		foreach ($files as $file) {
+			$path = $this->recording_path().'/'.$file['filename'];
+			if (file_exists($path)) {
+				unlink($path);
+			}
+		}
+	}
+
+	/**
 	 * Clear the IVR cache
 	 *
 	 * Mirrors app/ivr_menus/ivr_menu_edit.php:553-577 (clear the cache, then the
