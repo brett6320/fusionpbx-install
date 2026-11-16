@@ -37,6 +37,7 @@
 	$x_fax = new x_fax_setup;
 
 //process the http post
+	$posted = !empty($_POST);
 	if (!empty($_POST)) {
 
 		//validate the token
@@ -203,6 +204,10 @@
 		}
 	}
 	elseif (permission_exists('x_fax_setup_enable')) {
+		//suggest a number on a new form; a posted form keeps what was entered
+		if (!$posted && $fax_extension === '') {
+			$fax_extension = $x_fax->suggest_fax_extension();
+		}
 		echo $text['description-enable_fax']."<br><br>\n";
 		echo "<form method='post' name='frm_enable' id='frm_enable'>\n";
 		echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";

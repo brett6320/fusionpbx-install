@@ -20,6 +20,12 @@ class x_fax_setup {
 	//upstream fax app uuid, used by the fax class for database logging
 	const fax_app_uuid = '24108154-4ac3-1db6-1551-4731703a4440';
 
+	//outbound routes app uuid (app/dialplan_outbound)
+	const outbound_route_app_uuid = '8c914ec3-9fc0-8ab5-4cda-6c9288bdc9a3';
+
+	//longest fax extension: upstream's fax editor cuts it to 15 digits
+	const extension_max_length = 15;
+
 	//storage base directory, outside the webroot
 	const storage_base = '/var/lib/fusionpbx/x_fax_setup';
 
@@ -89,6 +95,129 @@ class x_fax_setup {
 			unset($parameters);
 		}
 		return false;
+	}
+
+	/**
+	 * Numbers already dialable in the domain: extensions and number aliases, destinations, fax servers and
+	 * dialplan entries, as number => true. The same places as number_in_use().
+	 *
+	 * @return array|false false when the lookup failed
+	 */
+	private function used_numbers() {
+		$queries = [
+			"select extension as number from v_extensions where domain_uuid = :domain_uuid union select number_alias from v_extensions where domain_uuid = :domain_uuid ",
+			"select destination_number as number from v_destinations where domain_uuid = :domain_uuid ",
+			"select fax_extension as number from v_fax where domain_uuid = :domain_uuid union select fax_destination_number from v_fax where domain_uuid = :domain_uuid ",
+			"select dialplan_number as number from v_dialplans where domain_uuid = :domain_uuid ",
+		];
+		$used = [];
+		foreach ($queries as $sql) {
+			$rows = $this->database->select($sql, ['domain_uuid' => $this->domain_uuid], 'all');
+			if ($rows === false) {
+				return false;
+			}
+			foreach (is_array($rows) ? $rows : [] as $row) {
+				if ((string)$row['number'] !== '') {
+					$used[(string)$row['number']] = true;
+				}
+			}
+		}
+		return $used;
+	}
+
+	/**
+	 * Destination number patterns of the enabled outbound routes of the domain and the global ones
+	 *
+	 * @return array|false the patterns; false when the lookup failed
+	 */
+	private function outbound_route_patterns() {
+		$sql = "select dd.dialplan_detail_data from v_dialplans as d, v_dialplan_details as dd ";
+		$sql .= "where dd.dialplan_uuid = d.dialplan_uuid ";
+		$sql .= "and d.app_uuid = :app_uuid ";
+		$sql .= "and cast(d.dialplan_enabled as text) = 'true' ";
+		$sql .= "and (dd.dialplan_detail_enabled is null or cast(dd.dialplan_detail_enabled as text) = 'true') ";
+		$sql .= "and dd.dialplan_detail_tag = 'condition' and dd.dialplan_detail_type = 'destination_number' ";
+		$sql .= "and ((d.domain_uuid = :domain_uuid and d.dialplan_context = :context) or d.domain_uuid is null or d.dialplan_context = 'global') ";
+		$parameters['app_uuid'] = self::outbound_route_app_uuid;
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['context'] = $this->domain_name;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		if ($rows === false) {
+			return false;
+		}
+		$patterns = [];
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			if ((string)$row['dialplan_detail_data'] !== '') {
+				$patterns[] = (string)$row['dialplan_detail_data'];
+			}
+		}
+		return $patterns;
+	}
+
+	/**
+	 * Whether an outbound route would take a call to the number, as FreeSWITCH matches (PCRE)
+	 */
+	private function routable(string $number, array $patterns): bool {
+		foreach ($patterns as $pattern) {
+			if (@preg_match("\x01".$pattern."\x01", $number) === 1) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Suggested number for a new fax server: the first free number in fax > extension_range (e.g. 9000-9099) when
+	 * one is set, otherwise a random one. Nobody needs to dial it: inbound routes send faxes to it. A number an
+	 * outbound route matches is skipped, so a call sent to a disabled fax server does not go out to a carrier.
+	 * Stock routes can match any length up to 20 and the fax editor keeps 15 digits, so lengths are tried from 15
+	 * down until one is free.
+	 *
+	 * @return string empty when the lookup failed or no number was found
+	 */
+	public function suggest_fax_extension(): string {
+		$used = $this->used_numbers();
+		$patterns = $this->outbound_route_patterns();
+		if ($used === false || $patterns === false) {
+			return '';
+		}
+		$free = function (string $number) use ($used, $patterns) {
+			return !isset($used[$number]) && !$this->routable($number, $patterns);
+		};
+
+		//the extension range, when set and of a reasonable size
+		$ranges = [];
+		$span = 0;
+		foreach (explode(',', (string)$this->settings->get('fax', 'extension_range', '')) as $range) {
+			if (!preg_match('/^\s*([0-9]{1,10})\s*-\s*([0-9]{1,10})\s*$/', $range, $matches) || (int)$matches[2] < (int)$matches[1]) {
+				continue;
+			}
+			$span += (int)$matches[2] - (int)$matches[1] + 1;
+			$ranges[] = [(int)$matches[1], (int)$matches[2]];
+		}
+		if (!empty($ranges) && $span <= 100000) {
+			foreach ($ranges as [$first, $last]) {
+				for ($number = $first; $number <= $last; $number++) {
+					if ($free((string)$number)) {
+						return (string)$number;
+					}
+				}
+			}
+		}
+
+		//a random number, the longest length no route matches
+		for ($length = self::extension_max_length; $length >= 6; $length--) {
+			for ($attempt = 0; $attempt < 20; $attempt++) {
+				$number = (string)random_int(1, 9);
+				for ($x = 1; $x < $length; $x++) {
+					$number .= (string)random_int(0, 9);
+				}
+				if ($free($number)) {
+					return $number;
+				}
+			}
+		}
+		return '';
 	}
 
 	/**
