@@ -98,7 +98,8 @@ One codec order for every phone: **Advanced > Default Settings > Provision >
 `x_codec_1` to `x_codec_8`**, highest priority first. The installer seeds
 G.722, PCMU, PCMA, G.723.1, G.729A/B, G.726-32, iLBC, OPUS; changes made there
 are kept on upgrade. Codec names: `OPUS`, `G.722`, `PCMU`, `PCMA`, `G.723.1`,
-`G.729A/B`, `G.726-32`, `iLBC`; an empty value skips the slot.
+`G.729A/B`, `G.726-32`, `iLBC`. To skip a slot, disable it or leave it empty in
+Default Settings (an empty domain setting does not override the default).
 
 Upstream's templates don't read it; the Provision Templates overrides do.
 Each override maps the names to its phone's format, skips codecs that phone
