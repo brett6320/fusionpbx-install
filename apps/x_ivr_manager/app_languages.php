@@ -102,13 +102,13 @@ $text['message-tts_failed']['en-us'] = "The greeting could not be generated.";
 
 $text['header-schedule']['en-us'] = "Schedule";
 
-$text['description-schedule']['en-us'] = "Route calls to this IVR menu only between the start and end below. Outside that window calls go to the fallback destination. Point your inbound route at the schedule number.";
+$text['description-schedule']['en-us'] = "Route calls to this IVR menu only between the start and end below. Outside that window calls go to the fallback destination. The schedule gets its own extension: send calls to it, not to the IVR menu, for the schedule to apply.";
 
 $text['label-schedule_name']['en-us'] = "Name";
 
-$text['label-schedule_number']['en-us'] = "Schedule Number";
+$text['label-schedule_number']['en-us'] = "Schedule Extension";
 
-$text['description-schedule_number']['en-us'] = "Number of the time condition that holds the schedule (digits only). Use it as the destination of your inbound route.";
+$text['description-schedule_number']['en-us'] = "A new, unused extension number for this schedule (digits only), suggested from the time condition range. This is not a destination: it is the number calls are sent to. In Dialplan > Inbound Routes, set the destination to this schedule (listed under Time Conditions) so calls follow it.";
 
 $text['label-schedule_start']['en-us'] = "Start";
 
@@ -221,5 +221,21 @@ $text['button-remove_part']['en-us'] = "Remove";
 $text['message-phrase_disabled']['en-us'] = "This phrase is disabled. Enable it in Phrases first.";
 
 $text['message-phrase_language_mismatch']['en-us'] = "This phrase is in a different language from the IVR menu, so callers would hear nothing.";
+
+$text['label-schedule_routes']['en-us'] = "Inbound routes using this schedule:";
+
+$text['label-schedule_routes_none']['en-us'] = "none yet. Calls reach the IVR menu by schedule only through this extension.";
+
+$text['message-schedule_number_in_use']['en-us'] = "Extension %s is already used by %s. Choose an unused number for the schedule.";
+
+$text['button-play']['en-us'] = "Play";
+
+$text['button-copy_text']['en-us'] = "Copy Text";
+
+$text['button-copied']['en-us'] = "Copied";
+
+$text['description-preview_incomplete']['en-us'] = "Parts of this greeting cannot be played here (missing recordings or actions other than recordings and pauses).";
+
+$text['placeholder-greeting_name']['en-us'] = "Leave empty to name it after the menu, the greeting and the time";
 
 ?>

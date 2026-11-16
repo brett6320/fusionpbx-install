@@ -148,6 +148,30 @@ language, so the picker refuses other phrases. A sub-menu keeps the language of
 the menu callers came from: a phrase for a sub-menu in a different language
 stays silent.
 
+### Greeting playback, text and names
+
+- The current greetings and the picker's selection can be played in the
+  browser (users with `recording_play` or `recording_download`). A phrase plays
+  its recordings in order with its pauses; other phrase actions (sounds, say)
+  are skipped and the page says so.
+- Text-to-speech greetings keep their text: each recording in
+  `recording_message` (also shown in **Applications > Recordings**), a phrase's
+  full script, pauses included, in its description. IVR Manager shows the text
+  under the greeting with a Copy button.
+- New greetings get descriptive names, e.g. "Main Menu - Long Greeting -
+  2026-11-16 14:05" (domain time zone), unless a name is given. A phrase's
+  recordings are named "<phrase> - Part 1", "Part 2", and so on.
+
+### Schedule extension
+
+An IVR schedule is a time condition with its own extension: calls sent to it
+reach the IVR menu inside the time window and the fallback outside it. Send
+calls to the schedule, not to the menu: in **Dialplan > Inbound Routes**,
+choose the schedule under Time Conditions. IVR Manager suggests the first free
+number in `time_conditions > extension_range` (upstream default 800-899),
+refuses a number an extension or another dialplan entry of the domain already
+uses, and lists the inbound routes pointing at the schedule.
+
 ## Carrier credentials and encryption
 
 Setting up a carrier, with Telnyx as the example: [docs/carrier-credentials.md](docs/carrier-credentials.md).
