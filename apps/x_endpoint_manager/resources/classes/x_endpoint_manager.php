@@ -610,9 +610,9 @@ class x_endpoint_manager {
 	 * @return array status (sent, failed, skipped_busy, skipped_unregistered, skipped_unsupported), detail
 	 */
 	public function check_sync(string $domain_uuid, string $device_uuid): array {
-		$devices = is_uuid($domain_uuid) && is_uuid($device_uuid) ? $this->get_devices($domain_uuid, [$device_uuid]) : [];
+		$devices = is_uuid($domain_uuid) && is_uuid($device_uuid) ? $this->get_devices($domain_uuid, [$device_uuid], true) : [];
 		if (empty($devices)) {
-			return ['status' => 'failed', 'detail' => 'Device no longer exists in this domain.'];
+			return ['status' => 'failed', 'detail' => 'Device is disabled or no longer exists in this domain.'];
 		}
 		$device = reset($devices);
 		return $this->signal_device(['domain_uuid' => $domain_uuid, 'device_uuid' => $device_uuid, 'device_vendor' => $device['device_vendor'] ?? ''], 'check_sync');
@@ -674,7 +674,7 @@ class x_endpoint_manager {
 			$vendor = strtolower(trim((string)($row['device_vendor'] ?? '')));
 		}
 		if (!in_array($vendor, self::event_notify_vendors, true)) {
-			return ['status' => 'skipped_unsupported', 'detail' => 'No reboot event is defined for vendor "'.$vendor.'".', 'sip_user' => $user, 'sip_profile' => $profile];
+			return ['status' => 'skipped_unsupported', 'detail' => 'No '.(($command === 'reboot') ? 'reboot' : 'check-sync').' event is defined for vendor "'.$vendor.'".', 'sip_user' => $user, 'sip_profile' => $profile];
 		}
 
 		//send the event
@@ -735,6 +735,32 @@ class x_endpoint_manager {
 		$parameters['rollout_uuid'] = $rollout_uuid;
 		$rows = $this->database->execute($sql, $parameters, 'all');
 		return is_array($rows) ? count($rows) : 0;
+	}
+
+	/**
+	 * Expire one queued reboot of a firmware rollout (x_provision_overlay: the device reached the release, or its
+	 * rollout target was replaced). Only a pending row of a rollout is touched.
+	 *
+	 * @return bool true when a row was expired
+	 */
+	public function cancel_log(string $domain_uuid, string $log_uuid, string $reason): bool {
+		if (!is_uuid($domain_uuid) || !is_uuid($log_uuid)) {
+			return false;
+		}
+		$sql = "update v_x_endpoint_reboot_log set ";
+		$sql .= "reboot_status = 'expired', ";
+		$sql .= "reboot_detail = :reason, ";
+		$sql .= "process_date = now(), update_date = now() ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "and x_endpoint_reboot_log_uuid = :log_uuid ";
+		$sql .= "and firmware_rollout_uuid is not null ";
+		$sql .= "and reboot_status = 'pending' ";
+		$sql .= "returning x_endpoint_reboot_log_uuid ";
+		$parameters['reason'] = $reason;
+		$parameters['domain_uuid'] = $domain_uuid;
+		$parameters['log_uuid'] = $log_uuid;
+		$rows = $this->database->execute($sql, $parameters, 'all');
+		return is_array($rows) && count($rows) > 0;
 	}
 
 	/**

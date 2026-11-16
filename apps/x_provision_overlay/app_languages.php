@@ -204,7 +204,7 @@ $text['description-firmware_version']['en-us'] = "Required for Grandstream (e.g.
 $text['description-firmware_models']['en-us'] = "Grandstream only: models the file serves, comma separated (e.g. GXP2170, GXP2160). Default: the model in the file name.";
 $text['description-firmware_defaults']['en-us'] = "Default release per family for this domain. Yealink families are the first number of the firmware version (66 for 66.86.0.15), known once a phone has fetched its configuration.";
 $text['description-firmware_devices']['en-us'] = "A value set elsewhere wins: a domain setting, a device profile setting or a device setting of the same name. To keep a device on its current firmware, disable its firmware rows under the device's settings.";
-$text['description-firmware_rollout']['en-us'] = "Each batch gets the release written, is notified to fetch its configuration, and is rebooted once it has. Finish sets the release as the domain default for the family; Abort returns devices that have not fetched yet and keeps the others on the release as manual targets.";
+$text['description-firmware_rollout']['en-us'] = "Each batch gets the release written, is notified to fetch its configuration, and is rebooted once it has. Finish sets the release as the domain default for the family; Abort returns devices that have not fetched since their batch started and keeps the others on the release (a later rollout can take them).";
 $text['description-firmware_batch']['en-us'] = "Pick devices, or leave all unticked to take the first ones in the list.";
 
 $text['label-firmware_file']['en-us'] = "File";
@@ -243,6 +243,7 @@ $text['label-firmware_source_device']['en-us'] = "device setting";
 $text['label-firmware_from_domain']['en-us'] = "domain default";
 $text['label-firmware_from_device']['en-us'] = "device";
 $text['label-firmware_from_rollout']['en-us'] = "rollout";
+$text['label-firmware_from_kept']['en-us'] = "kept from an aborted rollout";
 
 $text['option-firmware_unset']['en-us'] = "Unset";
 $text['option-firmware_none']['en-us'] = "None";
@@ -281,7 +282,8 @@ $text['button-firmware_finish']['en-us'] = "Finish";
 $text['button-firmware_abort']['en-us'] = "Abort";
 
 $text['confirm-delete_firmware']['en-us'] = "Delete this firmware release?";
-$text['confirm-firmware_finish']['en-us'] = "Make this release the domain default for the family and end the rollout?";
+$text['confirm-firmware_finish']['en-us'] = "Make this release the domain default for the family and end the rollout? {remaining} device(s) of the family have not been in a batch yet; they move to the release at their next configuration fetch, without the staged notify and reboot.";
+$text['confirm-firmware_default']['en-us'] = "A domain default changed: every phone of that family that follows the domain moves to it at its next configuration fetch. Use a rollout to move them in batches. Save anyway?";
 $text['confirm-firmware_abort']['en-us'] = "Abort this rollout?";
 
 $text['message-firmware_imported']['en-us'] = "Firmware imported.";
@@ -310,5 +312,7 @@ $text['error-firmware_rollout_active']['en-us'] = "A rollout of this family is a
 $text['error-firmware_batch_empty']['en-us'] = "No eligible devices for this batch.";
 $text['error-firmware_sync']['en-us'] = "The phones could not be linked now; the next run retries within two minutes.";
 $text['error-firmware_load']['en-us'] = "The firmware data could not be loaded.";
+$text['error-firmware_changed']['en-us'] = "{count} setting(s) were changed by someone else since this page was loaded and were not saved. Check them and save again.";
+$text['error-firmware_busy']['en-us'] = "The rollout runner is busy; try again in a moment.";
 
 ?>

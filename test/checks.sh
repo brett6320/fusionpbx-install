@@ -84,6 +84,15 @@ check "firmware sync after removal" runuser -u www-data -- php "$fw_cli" --sync
 check "firmware rows removed" test "$(db "select count(*) from v_device_settings where device_uuid = '$fw_device'")" = 0
 db "delete from v_x_provision_overlay_firmware_links where device_uuid = '$fw_device'; delete from v_x_provision_overlay_firmware_downloads where firmware_uuid = '$fw_uuid'; delete from v_x_provision_overlay_firmware where firmware_uuid = '$fw_uuid'" >/dev/null
 rm -rf "/var/lib/fusionpbx/provision_overlay/firmware/$fw_uuid" "$(dirname "$fw_rom")"
+#firmware rollout end to end without phones (fetches simulated); the timers are stopped so only the test moves rows
+systemctl stop x-endpoint-manager.timer x-provision-firmware.timer
+while IFS= read -r line; do
+	case "$line" in
+		PASS*) printf '%s\n' "$line" ;;
+		*) printf '%s\n' "$line"; fail=1 ;;
+	esac
+done < <(runuser -u www-data -- php /usr/src/x-install/test/firmware_rollout.php 2>&1 || echo "FAIL  firmware rollout test exited non-zero")
+systemctl start x-endpoint-manager.timer x-provision-firmware.timer
 
 #web login lifetime, read the way phpsessionclean reads it
 check "php-fpm session lifetime is $session_lifetime" test "$(PHP_INI_SCAN_DIR="/etc/php/$php_version/fpm/conf.d" "php$php_version" -c "/etc/php/$php_version/fpm/php.ini" -r 'echo ini_get("session.gc_maxlifetime");')" = "$session_lifetime"

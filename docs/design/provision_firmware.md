@@ -135,6 +135,10 @@ have been unverified data. Instead the family comes from the phone:
   the phone actually fetches (mixed templates, upstream's crossed variables
   such as `t42u` reading `t42g`) reads the right value. A phone that never
   fetched has no family: `unknown_model`, no rows.
+- A user agent that doesn't parse (a browser or curl fetch of the config URL
+  overwrote it) falls back to the family of the device's target, else of the
+  release its managed rows point at, so the rows aren't dropped. Grandstream
+  agents may carry a hardware revision between model and `SW`.
 - Grandstream: the model in the user agent (`HW GXP2170 SW ...`), else the
   device's model field; a release lists the models it serves (default from
   its file name), else `<model>fw.bin`.
@@ -200,14 +204,34 @@ skipped (busy/unregistered: retried up to 3 times by the runner, then
 version after 30 minutes). Devices that never fetch within a day: "not
 fetching".
 
-- **Abort**: removes targets only of devices not yet fetched since the start
-  and cancels their queued reboots (helper like `cancel_schedule_queue`, by
-  rollout uuid). Devices that fetched keep their target (now source =
-  manual), so a Yealink that upgraded is never downgraded by surprise; a new
-  rollout moves them back.
+- **Abort**: decided on fetch data, not the runner's last state: a target is
+  removed only when its device hasn't fetched since its batch started
+  (`device_provisioned_date` not after the target's `activate_date`); all
+  others are kept (the safe direction), with source `rollout_kept`. Queued
+  reboots of the rollout are cancelled (`cancel_rollout_queue`). A Yealink
+  that upgraded is never downgraded by surprise; kept targets are eligible
+  for a later rollout.
 - **Finish** (all eligible done or the admin decides): sets the domain
-  default to the release, converts the rollout's targets to "follow domain",
-  ends the rollout.
+  default to the release, removes the rollout's targets and the kept targets
+  on the same release ("follow domain"), ends the rollout. Kept targets on
+  another release stay until a batch takes them. The confirmation says how
+  many devices of the family were never in a batch (they move at their next
+  fetch, unstaged).
+- Reboot timing: a device is rebooted only `reboot_delay` after it fetched
+  (Yealink 20 minutes: it may be downloading and flashing the ROM it just
+  fetched, and reboots itself; Grandstream 5 minutes). When a device reports
+  the release, a reboot still queued is cancelled
+  (`x_endpoint_manager::cancel_log`, pending rows of a rollout only); so is
+  the queued reboot of a rollout target replaced by a manual one.
+- Concurrency: the runner, starting a rollout (one active per family, checked
+  under the lock), batches, abort, finish and device target changes share a
+  lock (`.firmware-rollouts.lock`); the syncs take the overlay lock inside it.
+  The runner gives up at once when a page action holds it.
+- Stale pages: the domain page posts each default and target with the value
+  it was rendered with; only entries the admin changed are applied, and one
+  changed by someone else since is refused with a message. The current value
+  is always an option (also a release of another family), so saving never
+  changes what the admin didn't touch.
 - *Built:* the runner moves each device written -> notified (`check_sync`
   sent, at most twice the domain's reboot rate per run; after 3 failures it
   goes on, the reboot follows) -> fetched -> rebooting -> rebooted, and to
@@ -218,7 +242,7 @@ fetching".
 - The runner (`--run-rollouts`, from the firmware timer) does steps 3-4 and
   the retries; it doesn't hold the overlay lock while queuing.
 - A domain default change outside a rollout reaches every phone of the family
-  at its next fetch; the page says so and offers a rollout instead.
+  at its next fetch; the page asks for confirmation and points to rollouts.
 
 ### 3.5 Serving
 
@@ -233,8 +257,10 @@ fetching".
   `Content-Type: application/octet-stream`, `X-Content-Type-Options:
   nosniff`, `Content-Disposition: attachment`. `http_auth` does not apply
   (documented: vendor files, no secrets).
-- `limit_conn` per IP on the location (2); the zone is in
-  `/etc/nginx/conf.d/x_provision_firmware.conf` (http context). *Built:* no
+- `limit_conn` per IP on the location, `provision_firmware_conn_limit` in
+  `config.sh` (default 16: many phones can share one NAT address); the zone
+  is in `/etc/nginx/conf.d/x_provision_firmware.conf` (http context), removed
+  again when the installer wrote it and `nginx -t` fails. *Built:* no
   `limit_rate_after`.
 - Each request is logged (release, domain, address, user agent, GET/HEAD) to
   a table, pruned after 90 days (*Built:* not status or bytes: nginx sends the

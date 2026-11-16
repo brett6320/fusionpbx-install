@@ -219,8 +219,11 @@ yet tried on phones; try one device of each model before a whole domain.
   configuration (`check-sync` / `resync`), and is rebooted through the
   endpoint manager's queue (trigger "Firmware rollout") once it has, unless it
   already reports the release. **Finish** makes the release the domain
-  default; **Abort** returns devices that haven't fetched yet and keeps the
-  others on the release as manual targets.
+  default; **Abort** returns devices that haven't fetched since their batch
+  started and keeps the others on the release (a later rollout can take
+  them). A Yealink is rebooted no sooner than 20 minutes after it fetched (it
+  may be flashing the new ROM), a Grandstream 5 minutes; a queued reboot is
+  cancelled once the phone reports the release.
 
 Device settings are written as for wallpapers (every 2 minutes by
 `x-provision-firmware.timer`, which also moves rollouts on, and right after a
@@ -229,7 +232,8 @@ variables, or `grandstream_firmware_path`. A value set elsewhere wins, and
 disabling a device's firmware rows opts it out, exactly as for wallpapers.
 
 Phones download from `http://<domain>/provision-firmware/<release>/...`:
-GET/HEAD only, two connections per address, upstream's `provision.cidr`
+GET/HEAD only, at most `provision_firmware_conn_limit` (config.sh, default
+16) connections per address, upstream's `provision.cidr`
 allow-list applies, provisioning HTTP auth does not (vendor files, no
 secrets). `.../none/...` is a 404. Files go out through an internal nginx
 location as `application/octet-stream` attachments. Downloads are listed on

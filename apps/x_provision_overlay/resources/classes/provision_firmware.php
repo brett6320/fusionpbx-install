@@ -43,9 +43,15 @@ class provision_firmware {
 	const reboot_attempts = 3;
 	const fail_after_seconds = 1800;
 	const not_fetching_seconds = 86400;
+	const rollout_lock_timeout = 30;
+
+	//seconds between a rollout device's fetch and its reboot: a Yealink that fetches a newer ROM downloads and
+	//flashes it on its own (and reboots), so it must not be rebooted meanwhile; a Grandstream checks at boot
+	const reboot_delay = ['yealink' => 1200, 'grandstream' => 300];
 
 	//files
 	const request_file = '.firmware-sync.request';
+	const rollout_lock_file = '.firmware-rollouts.lock';
 	const template_cache_file = '.firmware-templates.json';
 	const deleted_prefix = '.deleted-';
 
@@ -226,6 +232,56 @@ class provision_firmware {
 		$this->overlay = $setting_array['overlay'] ?? new provision_overlay(['database' => $this->database]);
 	}
 
+	/**
+	 * @var resource|null rollout lock (run_rollouts, batches, abort, finish, starting a rollout, device targets)
+	 */
+	private $rollout_lock_handle = null;
+	private $rollout_lock_depth = 0;
+
+	/**
+	 * Rollout lock, re-entrant. Separate from the overlay lock, which the syncs take inside it.
+	 */
+	public function rollout_lock(int $timeout = self::rollout_lock_timeout): bool {
+		if ($this->rollout_lock_depth > 0) {
+			$this->rollout_lock_depth++;
+			return true;
+		}
+		if (!is_dir(provision_overlay::state_root)) {
+			return false;
+		}
+		$handle = @fopen(provision_overlay::state_root.'/'.self::rollout_lock_file, 'c');
+		if ($handle === false) {
+			return false;
+		}
+		$deadline = time() + $timeout;
+		while (!flock($handle, LOCK_EX | LOCK_NB)) {
+			if (time() >= $deadline) {
+				fclose($handle);
+				return false;
+			}
+			usleep(200000);
+		}
+		$this->rollout_lock_handle = $handle;
+		$this->rollout_lock_depth = 1;
+		return true;
+	}
+
+	public function rollout_unlock(): void {
+		if ($this->rollout_lock_depth <= 0) {
+			return;
+		}
+		$this->rollout_lock_depth--;
+		if ($this->rollout_lock_depth === 0 && is_resource($this->rollout_lock_handle)) {
+			flock($this->rollout_lock_handle, LOCK_UN);
+			fclose($this->rollout_lock_handle);
+			$this->rollout_lock_handle = null;
+		}
+	}
+
+	private function endpoint_manager(): ?object {
+		return (is_object($this->database) && class_exists('x_endpoint_manager')) ? new x_endpoint_manager(['database' => $this->database]) : null;
+	}
+
 	//-------------------------------------------------------------------------
 	// catalog, names and user agents
 	//-------------------------------------------------------------------------
@@ -247,7 +303,8 @@ class provision_firmware {
 			$result = ['model' => strtoupper($m[1]), 'version' => $m[2]];
 		}
 		elseif ($vendor === 'grandstream') {
-			if (preg_match('/\bHW\s+([A-Za-z0-9-]+)\s+SW\s+([0-9]+(?:\.[0-9]+)+)/i', $agent, $m) === 1
+			//a hardware revision may follow the model: HW GXP2170 V2.3B SW 1.0.11.79
+			if (preg_match('/\bHW\s+([A-Za-z0-9-]+)(?:\s+(?!SW\b)\S+){0,3}\s+SW\s+([0-9]+(?:\.[0-9]+)+)/i', $agent, $m) === 1
 				|| preg_match('/^Grandstream\s+([A-Za-z]{2,}[A-Za-z0-9-]*)\s+([0-9]+(?:\.[0-9]+)+)/i', trim($agent), $m) === 1) {
 				$result = ['model' => strtoupper($m[1]), 'version' => $m[2]];
 			}
@@ -746,6 +803,17 @@ class provision_firmware {
 	}
 
 	/**
+	 * A device target as the firmware page shows and posts it: follow (no target), none, a release uuid, or
+	 * <release uuid>|rollout for a target of an active rollout.
+	 */
+	public static function target_value(?array $target): string {
+		if ($target === null) {
+			return 'follow';
+		}
+		return (empty($target['firmware_uuid']) ? 'none' : (string) $target['firmware_uuid']).(($target['target_source'] === 'rollout') ? '|rollout' : '');
+	}
+
+	/**
 	 * Active rollout of a family in a domain, or null.
 	 */
 	public function active_rollout(string $domain_uuid, string $vendor, string $family): ?array {
@@ -810,12 +878,28 @@ class provision_firmware {
 			$firmware_uuid = $value;
 			$family = (string) $release['firmware_family'];
 		}
-		$this->query("delete from v_x_provision_overlay_firmware_targets where device_uuid = :device_uuid ", ['device_uuid' => $device_uuid]);
-		if ($value !== 'follow') {
-			$sql = "insert into v_x_provision_overlay_firmware_targets ";
-			$sql .= "(firmware_target_uuid, domain_uuid, device_uuid, firmware_vendor, firmware_family, firmware_uuid, target_source, insert_date) ";
-			$sql .= "values (:uuid, :domain_uuid, :device_uuid, :vendor, :family, :firmware_uuid, 'manual', now()) ";
-			$this->query($sql, ['uuid' => uuid(), 'domain_uuid' => $domain_uuid, 'device_uuid' => $device_uuid, 'vendor' => $vendor, 'family' => $family, 'firmware_uuid' => $firmware_uuid]);
+		if (!$this->rollout_lock()) {
+			return 'error-firmware_busy';
+		}
+		try {
+			//a rollout target replaced: its queued reboot goes too
+			$old = $this->query("select target_source, reboot_log_uuid from v_x_provision_overlay_firmware_targets where device_uuid = :device_uuid ", ['device_uuid' => $device_uuid]);
+			foreach ($old as $row) {
+				$endpoint_manager = $this->endpoint_manager();
+				if ($row['target_source'] === 'rollout' && provision_overlay::valid_uuid((string) $row['reboot_log_uuid']) && $endpoint_manager !== null) {
+					$endpoint_manager->cancel_log($domain_uuid, (string) $row['reboot_log_uuid'], 'Firmware target changed by '.$username.'.');
+				}
+			}
+			$this->query("delete from v_x_provision_overlay_firmware_targets where device_uuid = :device_uuid ", ['device_uuid' => $device_uuid]);
+			if ($value !== 'follow') {
+				$sql = "insert into v_x_provision_overlay_firmware_targets ";
+				$sql .= "(firmware_target_uuid, domain_uuid, device_uuid, firmware_vendor, firmware_family, firmware_uuid, target_source, insert_date) ";
+				$sql .= "values (:uuid, :domain_uuid, :device_uuid, :vendor, :family, :firmware_uuid, 'manual', now()) ";
+				$this->query($sql, ['uuid' => uuid(), 'domain_uuid' => $domain_uuid, 'device_uuid' => $device_uuid, 'vendor' => $vendor, 'family' => $family, 'firmware_uuid' => $firmware_uuid]);
+			}
+		}
+		finally {
+			$this->rollout_unlock();
 		}
 		self::log('firmware_target', $domain_uuid, 'device='.$device_uuid.' target='.$value, $username);
 		return null;
@@ -908,7 +992,7 @@ class provision_firmware {
 		unset($sql, $parameters);
 
 		//links of earlier syncs for this domain, or for a device that is in this domain now
-		$sql = "select firmware_link_uuid, domain_uuid, device_uuid, device_setting_uuid, firmware_subcategory, firmware_value ";
+		$sql = "select firmware_link_uuid, domain_uuid, device_uuid, device_setting_uuid, firmware_subcategory, firmware_value, firmware_uuid ";
 		$sql .= "from v_x_provision_overlay_firmware_links ";
 		$sql .= "where domain_uuid = :domain_uuid ";
 		$sql .= "or device_uuid in (select device_uuid from v_devices where domain_uuid = :domain_uuid) ";
@@ -1001,6 +1085,7 @@ class provision_firmware {
 				'setting_uuid' => $link['device_setting_uuid'],
 				'value' => (string) $link['firmware_value'],
 				'enabled' => $row['enabled'],
+				'firmware_uuid' => (string) ($link['firmware_uuid'] ?? ''),
 			];
 		}
 
@@ -1027,14 +1112,32 @@ class provision_firmware {
 			$agent = self::parse_agent($vendor, (string) ($device['device_provisioned_agent'] ?? ''));
 			$family = self::device_family($vendor, $agent, (string) ($device['device_model'] ?? ''), $releases);
 			$set = self::catalog[$template];
+			$target = $targets[$device_uuid] ?? null;
+
+			//no family from the user agent (never fetched, or a browser or curl fetch overwrote it): the family of
+			//the device's target, else of the release its managed rows point at, so its rows aren't dropped
+			if ($family === null) {
+				if ($target !== null && $target['firmware_vendor'] === $vendor && (string) $target['firmware_family'] !== '') {
+					$family = (string) $target['firmware_family'];
+				}
+				else {
+					foreach ($managed[$device_uuid] ?? [] as $entries) {
+						foreach ($entries as $m) {
+							if (isset($releases[$m['firmware_uuid']]) && $releases[$m['firmware_uuid']]['firmware_vendor'] === $vendor) {
+								$family = (string) $releases[$m['firmware_uuid']]['firmware_family'];
+								break 2;
+							}
+						}
+					}
+				}
+			}
 
 			//target: device target, else domain default, else unset
-			$target = $targets[$device_uuid] ?? null;
 			$source = '';
 			$target_release = null;
 			$target_kind = 'unset';
 			if ($target !== null) {
-				$source = ($target['target_source'] === 'rollout') ? 'rollout' : 'device';
+				$source = ['rollout' => 'rollout', 'rollout_kept' => 'kept'][$target['target_source']] ?? 'device';
 				if (empty($target['firmware_uuid'])) {
 					$target_kind = 'none';
 				}
@@ -1154,7 +1257,7 @@ class provision_firmware {
 				'target_version' => (string) ($target_release['firmware_version'] ?? ''),
 				'target_kind' => $target_kind,
 				'rollout_uuid' => (string) ($target['firmware_rollout_uuid'] ?? ''),
-				'manual' => ($target !== null && $target['target_source'] !== 'rollout'),
+				'manual' => ($target !== null && $target['target_source'] === 'manual'),
 			];
 		}
 
@@ -1401,7 +1504,7 @@ class provision_firmware {
 	}
 
 	/**
-	 * Starts a rollout of a release in a domain. One active rollout per family.
+	 * Starts a rollout of a release in a domain. One active rollout per family (checked under the rollout lock).
 	 *
 	 * @return array ['error' => language key|null, 'rollout_uuid' => string]
 	 */
@@ -1410,24 +1513,32 @@ class provision_firmware {
 		if ($release === null || !provision_overlay::valid_uuid($domain_uuid)) {
 			return ['error' => 'error-firmware_invalid', 'rollout_uuid' => ''];
 		}
-		if ($this->active_rollout($domain_uuid, $release['firmware_vendor'], $release['firmware_family']) !== null) {
-			return ['error' => 'error-firmware_rollout_active', 'rollout_uuid' => ''];
+		if (!$this->rollout_lock()) {
+			return ['error' => 'error-firmware_busy', 'rollout_uuid' => ''];
 		}
-		$defaults = $this->defaults($domain_uuid);
-		$from = $defaults[$release['firmware_vendor'].'|'.$release['firmware_family']] ?? null;
-		$uuid = uuid();
-		$sql = "insert into v_x_provision_overlay_firmware_rollouts ";
-		$sql .= "(firmware_rollout_uuid, domain_uuid, firmware_vendor, firmware_family, firmware_uuid, rollout_from, rollout_state, rollout_created_by, insert_date) ";
-		$sql .= "values (:uuid, :domain_uuid, :vendor, :family, :firmware_uuid, :from, 'active', :username, now()) ";
-		$this->query($sql, [
-			'uuid' => $uuid,
-			'domain_uuid' => $domain_uuid,
-			'vendor' => $release['firmware_vendor'],
-			'family' => $release['firmware_family'],
-			'firmware_uuid' => $firmware_uuid,
-			'from' => ($from === null) ? 'unset' : (($from === '') ? 'none' : $from),
-			'username' => $username,
-		]);
+		try {
+			if ($this->active_rollout($domain_uuid, $release['firmware_vendor'], $release['firmware_family']) !== null) {
+				return ['error' => 'error-firmware_rollout_active', 'rollout_uuid' => ''];
+			}
+			$defaults = $this->defaults($domain_uuid);
+			$from = $defaults[$release['firmware_vendor'].'|'.$release['firmware_family']] ?? null;
+			$uuid = uuid();
+			$sql = "insert into v_x_provision_overlay_firmware_rollouts ";
+			$sql .= "(firmware_rollout_uuid, domain_uuid, firmware_vendor, firmware_family, firmware_uuid, rollout_from, rollout_state, rollout_created_by, insert_date) ";
+			$sql .= "values (:uuid, :domain_uuid, :vendor, :family, :firmware_uuid, :from, 'active', :username, now()) ";
+			$this->query($sql, [
+				'uuid' => $uuid,
+				'domain_uuid' => $domain_uuid,
+				'vendor' => $release['firmware_vendor'],
+				'family' => $release['firmware_family'],
+				'firmware_uuid' => $firmware_uuid,
+				'from' => ($from === null) ? 'unset' : (($from === '') ? 'none' : $from),
+				'username' => $username,
+			]);
+		}
+		finally {
+			$this->rollout_unlock();
+		}
 		self::log('firmware_rollout_started', $domain_uuid, 'rollout='.$uuid.' release='.$firmware_uuid, $username);
 		return ['error' => null, 'rollout_uuid' => $uuid];
 	}
@@ -1435,7 +1546,7 @@ class provision_firmware {
 	/**
 	 * Devices a batch of a rollout may take: of the rollout's family, linkable (not own, opted out, alternate,
 	 * unsupported, unknown model or disabled), without a manual target or one from this rollout, and not
-	 * reporting the release already.
+	 * reporting the release already. Targets kept by an aborted rollout (rollout_kept) are eligible.
 	 *
 	 * @return array device_uuid => analysis row
 	 */
@@ -1463,110 +1574,144 @@ class provision_firmware {
 	 * @return array ['error' => language key|null, 'devices' => int]
 	 */
 	public function start_batch(string $domain_uuid, string $domain_name, string $rollout_uuid, array $device_uuids, int $count, string $username): array {
-		$rollout = $this->rollout($domain_uuid, $rollout_uuid);
-		if ($rollout === null || $rollout['rollout_state'] !== 'active') {
-			return ['error' => 'error-firmware_invalid', 'devices' => 0];
+		if (!$this->rollout_lock()) {
+			return ['error' => 'error-firmware_busy', 'devices' => 0];
 		}
-		$eligible = self::eligible($this->analyze($domain_uuid, $domain_name), $rollout);
-		$picked = [];
-		if (!empty($device_uuids)) {
-			foreach ($device_uuids as $device_uuid) {
-				if (isset($eligible[$device_uuid])) {
-					$picked[] = $device_uuid;
+		try {
+			$rollout = $this->rollout($domain_uuid, $rollout_uuid);
+			if ($rollout === null || $rollout['rollout_state'] !== 'active') {
+				return ['error' => 'error-firmware_invalid', 'devices' => 0];
+			}
+			$eligible = self::eligible($this->analyze($domain_uuid, $domain_name), $rollout);
+			$picked = [];
+			if (!empty($device_uuids)) {
+				foreach ($device_uuids as $device_uuid) {
+					if (isset($eligible[$device_uuid])) {
+						$picked[] = $device_uuid;
+					}
 				}
 			}
-		}
-		else {
-			$picked = array_slice(array_keys($eligible), 0, max(0, $count));
-		}
-		if (empty($picked)) {
-			return ['error' => 'error-firmware_batch_empty', 'devices' => 0];
-		}
-		$this->query("select 1");
-		$pdo = $this->database->db;
-		$pdo->beginTransaction();
-		try {
-			foreach ($picked as $device_uuid) {
-				$this->query("delete from v_x_provision_overlay_firmware_targets where device_uuid = :device_uuid ", ['device_uuid' => $device_uuid]);
-				$sql = "insert into v_x_provision_overlay_firmware_targets ";
-				$sql .= "(firmware_target_uuid, domain_uuid, device_uuid, firmware_vendor, firmware_family, firmware_uuid, target_source, firmware_rollout_uuid, target_state, target_attempts, activate_date, state_date, insert_date) ";
-				$sql .= "values (:uuid, :domain_uuid, :device_uuid, :vendor, :family, :firmware_uuid, 'rollout', :rollout_uuid, 'written', 0, now(), now(), now()) ";
-				$this->query($sql, [
-					'uuid' => uuid(),
-					'domain_uuid' => $domain_uuid,
-					'device_uuid' => $device_uuid,
-					'vendor' => $rollout['firmware_vendor'],
-					'family' => $rollout['firmware_family'],
-					'firmware_uuid' => $rollout['firmware_uuid'],
-					'rollout_uuid' => $rollout_uuid,
-				]);
+			else {
+				$picked = array_slice(array_keys($eligible), 0, max(0, $count));
 			}
-			$pdo->commit();
-		}
-		catch (Throwable $e) {
-			if ($pdo->inTransaction()) {
-				$pdo->rollBack();
+			if (empty($picked)) {
+				return ['error' => 'error-firmware_batch_empty', 'devices' => 0];
 			}
-			self::log_error('batch '.$rollout_uuid, $e->getMessage());
-			return ['error' => 'error-firmware_store', 'devices' => 0];
+			$this->query("select 1");
+			$pdo = $this->database->db;
+			$pdo->beginTransaction();
+			try {
+				foreach ($picked as $device_uuid) {
+					$this->query("delete from v_x_provision_overlay_firmware_targets where device_uuid = :device_uuid ", ['device_uuid' => $device_uuid]);
+					$sql = "insert into v_x_provision_overlay_firmware_targets ";
+					$sql .= "(firmware_target_uuid, domain_uuid, device_uuid, firmware_vendor, firmware_family, firmware_uuid, target_source, firmware_rollout_uuid, target_state, target_attempts, activate_date, state_date, insert_date) ";
+					$sql .= "values (:uuid, :domain_uuid, :device_uuid, :vendor, :family, :firmware_uuid, 'rollout', :rollout_uuid, 'written', 0, now(), now(), now()) ";
+					$this->query($sql, [
+						'uuid' => uuid(),
+						'domain_uuid' => $domain_uuid,
+						'device_uuid' => $device_uuid,
+						'vendor' => $rollout['firmware_vendor'],
+						'family' => $rollout['firmware_family'],
+						'firmware_uuid' => $rollout['firmware_uuid'],
+						'rollout_uuid' => $rollout_uuid,
+					]);
+				}
+				$pdo->commit();
+			}
+			catch (Throwable $e) {
+				if ($pdo->inTransaction()) {
+					$pdo->rollBack();
+				}
+				self::log_error('batch '.$rollout_uuid, $e->getMessage());
+				return ['error' => 'error-firmware_store', 'devices' => 0];
+			}
+			$sync = $this->sync_domain($domain_uuid);
+			if (!$sync['success']) {
+				//the runner syncs before it notifies, so the batch still goes out
+				self::log_error('sync '.$domain_uuid, $sync['error']);
+			}
 		}
-		$sync = $this->sync_domain($domain_uuid);
-		if (!$sync['success']) {
-			//the runner syncs before it notifies, so the batch still goes out
-			self::log_error('sync '.$domain_uuid, $sync['error']);
+		finally {
+			$this->rollout_unlock();
 		}
 		self::log('firmware_batch_started', $domain_uuid, 'rollout='.$rollout_uuid.' devices='.count($picked), $username);
 		return ['error' => null, 'devices' => count($picked)];
 	}
 
 	/**
-	 * Aborts a rollout: devices that haven't fetched since their batch started lose their target (and queued
-	 * reboots); devices that fetched keep it as a manual target, so a Yealink that upgraded is never moved back
-	 * by surprise.
+	 * Aborts a rollout. Decided on what the devices did, not on the runner's last state: a device that fetched
+	 * its configuration after its batch started (device_provisioned_date after activate_date) may already run
+	 * the release, so it keeps the target (source rollout_kept: a later rollout can take it); the others lose
+	 * it. Queued reboots of the rollout are cancelled.
 	 *
 	 * @return string|null language key of the error
 	 */
 	public function abort_rollout(string $domain_uuid, string $rollout_uuid, string $username): ?string {
-		$rollout = $this->rollout($domain_uuid, $rollout_uuid);
-		if ($rollout === null || $rollout['rollout_state'] !== 'active') {
-			return 'error-firmware_invalid';
+		if (!$this->rollout_lock()) {
+			return 'error-firmware_busy';
 		}
-		if (class_exists('x_endpoint_manager')) {
-			(new x_endpoint_manager(['database' => $this->database]))->cancel_rollout_queue($domain_uuid, $rollout_uuid, 'Firmware rollout aborted.');
+		try {
+			$rollout = $this->rollout($domain_uuid, $rollout_uuid);
+			if ($rollout === null || $rollout['rollout_state'] !== 'active') {
+				return 'error-firmware_invalid';
+			}
+			$endpoint_manager = $this->endpoint_manager();
+			if ($endpoint_manager !== null) {
+				$endpoint_manager->cancel_rollout_queue($domain_uuid, $rollout_uuid, 'Firmware rollout aborted.');
+			}
+			$sql = "delete from v_x_provision_overlay_firmware_targets as t ";
+			$sql .= "where t.firmware_rollout_uuid = :uuid ";
+			$sql .= "and not exists (select 1 from v_devices as d where d.device_uuid = t.device_uuid ";
+			$sql .= "and d.device_provisioned_date is not null and d.device_provisioned_date > t.activate_date) ";
+			$this->query($sql, ['uuid' => $rollout_uuid]);
+			$sql = "update v_x_provision_overlay_firmware_targets set target_source = 'rollout_kept', firmware_rollout_uuid = null, target_state = null, ";
+			$sql .= "reboot_log_uuid = null, update_date = now() ";
+			$sql .= "where firmware_rollout_uuid = :uuid ";
+			$this->query($sql, ['uuid' => $rollout_uuid]);
+			$this->query("update v_x_provision_overlay_firmware_rollouts set rollout_state = 'aborted', update_date = now() where firmware_rollout_uuid = :uuid ", ['uuid' => $rollout_uuid]);
+			$this->sync_domain($domain_uuid);
 		}
-		$sql = "delete from v_x_provision_overlay_firmware_targets ";
-		$sql .= "where firmware_rollout_uuid = :uuid and target_state in ('written', 'notified', 'not_fetching') ";
-		$this->query($sql, ['uuid' => $rollout_uuid]);
-		$sql = "update v_x_provision_overlay_firmware_targets set target_source = 'manual', firmware_rollout_uuid = null, target_state = null, update_date = now() ";
-		$sql .= "where firmware_rollout_uuid = :uuid ";
-		$this->query($sql, ['uuid' => $rollout_uuid]);
-		$this->query("update v_x_provision_overlay_firmware_rollouts set rollout_state = 'aborted', update_date = now() where firmware_rollout_uuid = :uuid ", ['uuid' => $rollout_uuid]);
-		$this->sync_domain($domain_uuid);
+		finally {
+			$this->rollout_unlock();
+		}
 		self::log('firmware_rollout_aborted', $domain_uuid, 'rollout='.$rollout_uuid, $username);
 		return null;
 	}
 
 	/**
-	 * Finishes a rollout: the release becomes the domain default of the family and the rollout's targets are
-	 * removed (their devices follow the domain, which now gives them the same release).
+	 * Finishes a rollout: the release becomes the domain default of the family; the rollout's targets, and the
+	 * targets kept by aborted rollouts on the same release, are removed (their devices follow the domain, which
+	 * now gives them the same release). Kept targets on another release stay until a batch takes them.
 	 *
 	 * @return string|null language key of the error
 	 */
 	public function finish_rollout(string $domain_uuid, string $rollout_uuid, string $username): ?string {
-		$rollout = $this->rollout($domain_uuid, $rollout_uuid);
-		if ($rollout === null || $rollout['rollout_state'] !== 'active') {
-			return 'error-firmware_invalid';
+		if (!$this->rollout_lock()) {
+			return 'error-firmware_busy';
 		}
-		$error = $this->set_default($domain_uuid, $rollout['firmware_vendor'], $rollout['firmware_family'], $rollout['firmware_uuid'], $username, true);
-		if ($error !== null) {
-			return $error;
+		try {
+			$rollout = $this->rollout($domain_uuid, $rollout_uuid);
+			if ($rollout === null || $rollout['rollout_state'] !== 'active') {
+				return 'error-firmware_invalid';
+			}
+			$error = $this->set_default($domain_uuid, $rollout['firmware_vendor'], $rollout['firmware_family'], $rollout['firmware_uuid'], $username, true);
+			if ($error !== null) {
+				return $error;
+			}
+			$endpoint_manager = $this->endpoint_manager();
+			if ($endpoint_manager !== null) {
+				$endpoint_manager->cancel_rollout_queue($domain_uuid, $rollout_uuid, 'Firmware rollout finished.');
+			}
+			$this->query("delete from v_x_provision_overlay_firmware_targets where firmware_rollout_uuid = :uuid ", ['uuid' => $rollout_uuid]);
+			$sql = "delete from v_x_provision_overlay_firmware_targets ";
+			$sql .= "where domain_uuid = :domain_uuid and target_source = 'rollout_kept' and firmware_uuid = :firmware_uuid ";
+			$this->query($sql, ['domain_uuid' => $domain_uuid, 'firmware_uuid' => $rollout['firmware_uuid']]);
+			$this->query("update v_x_provision_overlay_firmware_rollouts set rollout_state = 'finished', update_date = now() where firmware_rollout_uuid = :uuid ", ['uuid' => $rollout_uuid]);
+			$this->sync_domain($domain_uuid);
 		}
-		if (class_exists('x_endpoint_manager')) {
-			(new x_endpoint_manager(['database' => $this->database]))->cancel_rollout_queue($domain_uuid, $rollout_uuid, 'Firmware rollout finished.');
+		finally {
+			$this->rollout_unlock();
 		}
-		$this->query("delete from v_x_provision_overlay_firmware_targets where firmware_rollout_uuid = :uuid ", ['uuid' => $rollout_uuid]);
-		$this->query("update v_x_provision_overlay_firmware_rollouts set rollout_state = 'finished', update_date = now() where firmware_rollout_uuid = :uuid ", ['uuid' => $rollout_uuid]);
-		$this->sync_domain($domain_uuid);
 		self::log('firmware_rollout_finished', $domain_uuid, 'rollout='.$rollout_uuid, $username);
 		return null;
 	}
@@ -1575,12 +1720,14 @@ class provision_firmware {
 	 * Moves the devices of every active rollout on (x-provision-firmware.timer, every 2 minutes):
 	 *   written      -> check_sync sent -> notified (after 3 failed attempts: notified anyway, a reboot follows)
 	 *   notified     -> fetched once device_provisioned_date is after the batch start; not_fetching after a day
-	 *   fetched      -> reboot queued (x_endpoint_manager, trigger firmware) -> rebooting
+	 *   fetched      -> after reboot_delay (Yealink 20, Grandstream 5 minutes): reboot queued (x_endpoint_manager,
+	 *                   trigger firmware) -> rebooting
 	 *   rebooting    -> rebooted when sent; busy/unregistered/expired: back to fetched, after 3 attempts pending_boot
 	 *   rebooted     -> failed when it fetched again 30 minutes after the reboot and still reports another version
-	 *   any          -> done once the phone reports the release's version
-	 * check_sync goes out at most at the endpoint manager's per-domain reboot rate per run. The overlay lock is
-	 * held only by the syncs, not while queuing.
+	 *   any          -> done once the phone reports the release's version; a reboot still queued is cancelled
+	 * check_sync goes out at most at the endpoint manager's per-domain reboot rate per run. Runs under the rollout
+	 * lock (gives up at once when a page action holds it; the next run retries); the overlay lock is held only by
+	 * the syncs.
 	 *
 	 * @return array ['success' => bool, 'error' => string, 'changed' => int]
 	 */
@@ -1590,13 +1737,18 @@ class provision_firmware {
 			$run['error'] = 'a database connection is required';
 			return $run;
 		}
+		if (!$this->rollout_lock(self::sync_all_lock_timeout)) {
+			$run['success'] = true;
+			$run['error'] = 'the rollout lock is held by a page action; the next run retries';
+			return $run;
+		}
 		try {
 			$rollouts = $this->query("select r.*, f.firmware_version from v_x_provision_overlay_firmware_rollouts as r left join v_x_provision_overlay_firmware as f on f.firmware_uuid = r.firmware_uuid where r.rollout_state = 'active' ");
 			if (empty($rollouts)) {
 				$run['success'] = true;
 				return $run;
 			}
-			$endpoint_manager = class_exists('x_endpoint_manager') ? new x_endpoint_manager(['database' => $this->database]) : null;
+			$endpoint_manager = $this->endpoint_manager();
 			$synced = [];
 			foreach ($rollouts as $rollout) {
 				$domain_uuid = (string) $rollout['domain_uuid'];
@@ -1631,15 +1783,16 @@ class provision_firmware {
 				}
 				$statuses = ($endpoint_manager !== null) ? $endpoint_manager->log_statuses(array_filter(array_column($targets, 'reboot_log_uuid'))) : [];
 				$notify_budget = ($endpoint_manager !== null) ? max(1, $endpoint_manager->domain_limit($domain_uuid)) * 2 : 0;
+				$reboot_delay = self::reboot_delay[(string) $rollout['firmware_vendor']] ?? 300;
 				$now = time();
 				foreach ($targets as $device_uuid => $target) {
 					$state = (string) $target['target_state'];
 					$attempts = (int) ($target['target_attempts'] ?? 0);
-					$activate = (int) $target['activate_epoch'];
-					$since = (int) $target['state_epoch'];
+					$activate = (float) $target['activate_epoch'];
+					$since = (float) $target['state_epoch'];
 					$device = $devices[$device_uuid] ?? null;
 					$agent = self::parse_agent((string) $rollout['firmware_vendor'], (string) ($device['device_provisioned_agent'] ?? ''));
-					$fetched = $device !== null && $device['provisioned_epoch'] !== null ? (int) $device['provisioned_epoch'] : 0;
+					$fetched = $device !== null && $device['provisioned_epoch'] !== null ? (float) $device['provisioned_epoch'] : 0.0;
 					$new = $state;
 					$log_uuid = $target['reboot_log_uuid'] ?? null;
 					$detail = null;
@@ -1648,6 +1801,10 @@ class provision_firmware {
 					}
 					if ($agent['version'] !== '' && $agent['version'] === (string) $rollout['firmware_version']) {
 						$new = 'done';
+						if ($state !== 'done' && provision_overlay::valid_uuid((string) $log_uuid) && $endpoint_manager !== null
+							&& $endpoint_manager->cancel_log($domain_uuid, (string) $log_uuid, 'Device already reports firmware '.$rollout['firmware_version'].'.')) {
+							$detail = 'Queued reboot cancelled: the device already reports the release.';
+						}
 					}
 					elseif ($state === 'written') {
 						if ($endpoint_manager === null || $attempts >= self::notify_attempts) {
@@ -1675,7 +1832,8 @@ class provision_firmware {
 						}
 					}
 					elseif ($state === 'fetched') {
-						if ($endpoint_manager !== null) {
+						//a Yealink may be flashing the ROM it just fetched: wait before rebooting it
+						if ($endpoint_manager !== null && $now - $since >= $reboot_delay) {
 							$queued = $endpoint_manager->enqueue_devices($domain_uuid, [$device_uuid], 'firmware', ['user_uuid' => null, 'username' => 'firmware rollout'], null, true, (string) $rollout['firmware_rollout_uuid']);
 							if (isset($queued[$device_uuid])) {
 								$new = 'rebooting';
@@ -1721,6 +1879,9 @@ class provision_firmware {
 		catch (Throwable $e) {
 			$run['error'] = $e->getMessage();
 			return $run;
+		}
+		finally {
+			$this->rollout_unlock();
 		}
 	}
 

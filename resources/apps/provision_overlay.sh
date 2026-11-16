@@ -34,6 +34,11 @@ link_path=$templates_parent/provision
 link_target=$state_root/merged/current
 nginx_conf=/etc/nginx/sites-available/fusionpbx
 nginx_zone_conf=/etc/nginx/conf.d/x_provision_firmware.conf
+#connections per address on /provision-firmware/ (config.sh; many phones behind one NAT address need more)
+firmware_conn_limit=${provision_firmware_conn_limit:-16}
+case "$firmware_conn_limit" in
+	''|*[!0-9]*|0) warn "x_provision_overlay: provision_firmware_conn_limit must be a positive number; using 16."; firmware_conn_limit=16 ;;
+esac
 marker_begin='# BEGIN x_provision_overlay'
 marker_end='# END x_provision_overlay'
 
@@ -131,7 +136,7 @@ asset_block() {
 	printf '\t\t%s\n' "limit_except GET {"
 	printf '\t\t\t%s\n' "deny all;"
 	printf '\t\t%s\n' "}"
-	printf '\t\t%s\n' "limit_conn x_provision_firmware 2;"
+	printf '\t\t%s\n' "limit_conn x_provision_firmware $firmware_conn_limit;"
 	printf '\t\t%s\n' "fastcgi_pass unix:$socket;"
 	printf '\t\t%s\n' "include fastcgi_params;"
 	printf '\t\t%s\n' "fastcgi_param   SCRIPT_FILENAME $fusionpbx_dir/app/x_provision_overlay/firmware.php;"
@@ -143,7 +148,7 @@ asset_block() {
 	printf '\t\t%s\n' "types { }"
 	printf '\t\t%s\n' "default_type application/octet-stream;"
 	printf '\t\t%s\n' "add_header X-Content-Type-Options nosniff always;"
-	printf '\t\t%s\n' "limit_conn x_provision_firmware 2;"
+	printf '\t\t%s\n' "limit_conn x_provision_firmware $firmware_conn_limit;"
 	printf '\t%s\n' "}"
 	printf '\t%s\n' "$marker_end"
 }
@@ -181,12 +186,14 @@ update_nginx() {
 	fi
 
 	#connection limit zone of the firmware locations (http context; Debian's nginx.conf includes conf.d/*.conf)
+	local zone_written=false
 	# shellcheck disable=SC2016  # nginx variable, literal
 	if ! grep -qsx 'limit_conn_zone $binary_remote_addr zone=x_provision_firmware:1m;' "$nginx_zone_conf"; then
 		# shellcheck disable=SC2016
 		printf '%s\n' '# x_provision_overlay: per-address connection limit of /provision-firmware/; managed by the installer' \
 			'limit_conn_zone $binary_remote_addr zone=x_provision_firmware:1m;' > "$nginx_zone_conf"
 		chmod 0644 "$nginx_zone_conf"
+		zone_written=true
 	fi
 
 	#current file without our blocks
@@ -266,6 +273,7 @@ update_nginx() {
 	cat "$work/new" > "$nginx_conf"
 	if ! nginx -t; then
 		cat "$work/backup" > "$nginx_conf"
+		[ "$zone_written" = true ] && rm -f "$nginx_zone_conf"
 		warn "x_provision_overlay: nginx -t failed with the asset location; $nginx_conf restored."
 		return 0
 	fi

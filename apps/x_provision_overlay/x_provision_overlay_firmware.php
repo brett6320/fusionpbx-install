@@ -93,25 +93,42 @@
 					$done = $text['message-firmware_deleted'];
 					break;
 
-				//domain defaults and device targets: only values that changed
+				//domain defaults and device targets: only entries the admin changed (posted value differs from the
+				//value the page was rendered with); an entry changed by someone else since then is not applied
 				case 'save':
+					$conflicts = 0;
+					$defaults_orig = (array) ($_POST['defaults_orig'] ?? []);
 					$current_defaults = $firmware->defaults($domain_uuid);
 					foreach ((array) ($_POST['defaults'] ?? []) as $key => $value) {
-						[$vendor, $family] = array_pad(explode('|', (string) $key, 2), 2, '');
+						$key = (string) $key;
 						$value = (string) $value;
-						$current = array_key_exists($vendor.'|'.$family, $current_defaults) ? ($current_defaults[$vendor.'|'.$family] === '' ? 'none' : $current_defaults[$vendor.'|'.$family]) : '';
-						if ($value !== $current) {
-							$error = $firmware->set_default($domain_uuid, $vendor, $family, $value, $username) ?? $error;
+						if (!array_key_exists($key, $defaults_orig) || $value === (string) $defaults_orig[$key]) {
+							continue;
 						}
+						$current = array_key_exists($key, $current_defaults) ? ($current_defaults[$key] === '' ? 'none' : $current_defaults[$key]) : '';
+						if ($current !== (string) $defaults_orig[$key]) {
+							$conflicts++;
+							continue;
+						}
+						[$vendor, $family] = array_pad(explode('|', $key, 2), 2, '');
+						$error = $firmware->set_default($domain_uuid, $vendor, $family, $value, $username) ?? $error;
 					}
+					$targets_orig = (array) ($_POST['targets_orig'] ?? []);
 					$current_targets = $firmware->targets($domain_uuid);
 					foreach ((array) ($_POST['targets'] ?? []) as $device_uuid => $value) {
+						$device_uuid = (string) $device_uuid;
 						$value = (string) $value;
-						$target = $current_targets[$device_uuid] ?? null;
-						$current = ($target === null) ? 'follow' : (empty($target['firmware_uuid']) ? 'none' : $target['firmware_uuid']).($target['target_source'] === 'rollout' ? '|rollout' : '');
-						if (is_uuid((string) $device_uuid) && $value !== $current && $value !== '') {
-							$error = $firmware->set_target($domain_uuid, (string) $device_uuid, $value, $username) ?? $error;
+						if (!is_uuid($device_uuid) || $value === '' || !array_key_exists($device_uuid, $targets_orig) || $value === (string) $targets_orig[$device_uuid]) {
+							continue;
 						}
+						if (provision_firmware::target_value($current_targets[$device_uuid] ?? null) !== (string) $targets_orig[$device_uuid]) {
+							$conflicts++;
+							continue;
+						}
+						$error = $firmware->set_target($domain_uuid, $device_uuid, $value, $username) ?? $error;
+					}
+					if ($conflicts > 0) {
+						message::add(str_replace('{count}', (string) $conflicts, $text['error-firmware_changed']), 'negative');
 					}
 					$done = $text['message-firmware_saved'];
 					$sync = true;
@@ -171,12 +188,14 @@
 	$releases = [];
 	$analysis = null;
 	$defaults = [];
+	$current_targets = [];
 	$rollouts = [];
 	try {
 		$releases = $firmware->releases();
 		if ($tab === 'domain') {
 			$analysis = $firmware->analyze($domain_uuid, $domain_name);
 			$defaults = $firmware->defaults($domain_uuid);
+			$current_targets = $firmware->targets($domain_uuid);
 			$rollouts = $firmware->rollouts($domain_uuid);
 		}
 	}
@@ -338,7 +357,7 @@
 			echo "<form method='post' class='inline' action='".escape($page)."'>\n";
 			echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
 			echo "<input type='hidden' name='action' value='finish'>\n";
-			echo button::create(['type'=>'submit','label'=>$text['button-firmware_finish'],'icon'=>'check','onclick'=>"if (!confirm('".escape(addslashes($text['confirm-firmware_finish']))."')) { this.blur(); return false; }"]);
+			echo button::create(['type'=>'submit','label'=>$text['button-firmware_finish'],'icon'=>'check','onclick'=>"if (!confirm('".escape(addslashes(str_replace('{remaining}', (string) count($eligible), $text['confirm-firmware_finish'])))."')) { this.blur(); return false; }"]);
 			echo "</form>\n";
 			echo "<form method='post' class='inline' action='".escape($page)."'>\n";
 			echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
@@ -426,7 +445,8 @@
 		}
 	}
 
-	echo "<form method='post' action='".escape($page)."'>\n";
+	//a domain default changed outside a rollout reaches every phone of the family at its next fetch
+	echo "<form method='post' action='".escape($page)."' onsubmit=\"var changed = false; this.querySelectorAll('select[data-orig]').forEach(function (s) { if (s.value !== s.getAttribute('data-orig') && s.getAttribute('data-devices') !== '0') { changed = true; } }); return !changed || confirm('".escape(addslashes($text['confirm-firmware_default']))."');\">\n";
 	echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
 	echo "<input type='hidden' name='action' value='save'>\n";
 	echo "<div class='card'>\n";
@@ -445,9 +465,14 @@
 		echo "	<td>".escape((string) $info['devices']).($info['managed'] > 0 ? " <small>(".escape(str_replace(['{managed}', '{current}'], [(string) $info['managed'], (string) $info['current']], $text['label-firmware_managed_current'])).")</small>" : '')."</td>\n";
 		echo "	<td>";
 		if ($can_edit && $active === null) {
-			echo "<select class='formfld' name='defaults[".escape($key)."]'>";
+			echo "<input type='hidden' name='defaults_orig[".escape($key)."]' value='".escape($current)."'>";
+			echo "<select class='formfld' name='defaults[".escape($key)."]' data-orig='".escape($current)."' data-devices='".(int) $info['devices']."'>";
 			echo "<option value=''".($current === '' ? " selected='selected'" : '').">".$text['option-firmware_unset']."</option>";
 			echo "<option value='none'".($current === 'none' ? " selected='selected'" : '').">".$text['option-firmware_none']."</option>";
+			//the current value is always an option, so saving never changes it unless the admin does
+			if ($current !== '' && $current !== 'none' && !isset($family_releases[$key][$current])) {
+				echo "<option value='".escape($current)."' selected='selected'>".escape(isset($releases[$current]) ? $release_label($releases[$current]) : $current)."</option>";
+			}
 			foreach ($family_releases[$key] ?? [] as $uuid => $release) {
 				echo "<option value='".escape($uuid)."'".($current === $uuid ? " selected='selected'" : '').">".escape($release_label($release))."</option>";
 			}
@@ -487,7 +512,7 @@
 	}
 	foreach ($analysis['devices'] as $device_uuid => $device) {
 		$key = $device['vendor'].'|'.$device['family'];
-		$target = $device['manual'] ? ($device['target_kind'] === 'none' ? 'none' : $device['target_uuid']) : ($device['target_source'] === 'rollout' ? ($device['target_uuid'].'|rollout') : 'follow');
+		$target = provision_firmware::target_value($current_targets[$device_uuid] ?? null);
 		$state = $text['state-firmware_'.$device['state']] ?? escape($device['state']);
 		if ($device['state'] === 'own') {
 			$sources = [];
@@ -506,12 +531,18 @@
 		echo "	<td>".escape($device['version'])."</td>\n";
 		echo "	<td>";
 		if ($can_edit && $device['family'] !== '') {
+			echo "<input type='hidden' name='targets_orig[".escape($device_uuid)."]' value='".escape($target)."'>";
 			echo "<select class='formfld' name='targets[".escape($device_uuid)."]'>";
-			if ($device['target_source'] === 'rollout') {
+			if (str_ends_with($target, '|rollout')) {
 				echo "<option value='".escape($target)."' selected='selected'>".escape(str_replace('{version}', $device['target_version'], $text['option-firmware_rollout']))."</option>";
 			}
 			echo "<option value='follow'".($target === 'follow' ? " selected='selected'" : '').">".$text['option-firmware_follow']."</option>";
 			echo "<option value='none'".($target === 'none' ? " selected='selected'" : '').">".$text['option-firmware_none']."</option>";
+			//the current target is always an option (also a release of another family: invalid_target)
+			if (is_uuid($target) && !isset($family_releases[$key][$target])) {
+				$other = $releases[$target] ?? null;
+				echo "<option value='".escape($target)."' selected='selected'>".escape($other !== null ? $family_label($other['firmware_vendor'], $other['firmware_family']).' '.$release_label($other) : $target)."</option>";
+			}
 			foreach ($family_releases[$key] ?? [] as $uuid => $release) {
 				echo "<option value='".escape($uuid)."'".($target === $uuid ? " selected='selected'" : '').">".escape($release_label($release))."</option>";
 			}
