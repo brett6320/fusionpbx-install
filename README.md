@@ -87,6 +87,12 @@ A default install has a self-signed certificate, which most phones reject.
 Install a trusted certificate (upstream ships a Let's Encrypt script) or turn
 off certificate checks on the phones.
 
+## Theme
+
+The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,
+once: **Advanced > Default Settings > Domain > theme**. A theme you choose there
+later is kept, and domains and users can still pick their own.
+
 ## Web login sessions
 
 A web login ends about 8 hours after its last activity (`session_lifetime` in
