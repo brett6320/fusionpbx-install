@@ -238,4 +238,22 @@ $text['description-preview_incomplete']['en-us'] = "Parts of this greeting canno
 
 $text['placeholder-greeting_name']['en-us'] = "Leave empty to name it after the menu, the greeting and the time";
 
+$text['button-remove_greeting']['en-us'] = "Remove from Menu";
+
+$text['button-delete_greeting']['en-us'] = "Delete";
+
+$text['confirm-greeting_remove']['en-us'] = "Remove the greeting \"%s\" from this menu? The recording or phrase itself is kept.";
+
+$text['confirm-recording_delete']['en-us'] = "Permanently delete the recording \"%s\" and its audio file? This cannot be undone.";
+
+$text['confirm-phrase_delete']['en-us'] = "Permanently delete the phrase \"%s\"? Recordings created for it are deleted too unless something else uses them. This cannot be undone.";
+
+$text['message-greeting_removed']['en-us'] = "Greeting removed from the menu.";
+
+$text['message-greeting_deleted']['en-us'] = "Greeting deleted.";
+
+$text['message-greeting_in_use']['en-us'] = "Not deleted, still in use by: %s. Remove it there first.";
+
+$text['message-greeting_delete_failed']['en-us'] = "The greeting could not be deleted.";
+
 ?>

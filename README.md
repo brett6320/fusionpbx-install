@@ -188,6 +188,17 @@ stays silent.
   2026-11-16 14:05" (domain time zone), unless a name is given. A phrase's
   recordings are named "<phrase> - Part 1", "Part 2", and so on.
 
+### Removing and deleting greetings
+
+**Remove from Menu** takes a greeting off the menu and keeps the recording or
+phrase. **Delete** in the greeting picker deletes a recording (and its audio
+file) or a phrase for good, after a confirmation, for users with
+`recording_delete` or `phrase_delete`. It is refused while anything still uses
+it: an IVR menu (greetings, invalid and exit sounds), a phrase, a ring group or
+call center queue greeting, or a dialplan that names it; the message lists
+what. Deleting a phrase also deletes the recordings created for it, unless
+something else plays them.
+
 ### Schedule extension
 
 An IVR schedule is a time condition with its own extension: calls sent to it
