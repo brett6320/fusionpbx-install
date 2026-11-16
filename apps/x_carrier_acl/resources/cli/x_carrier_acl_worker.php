@@ -295,7 +295,7 @@
 			$reload_error = $applier->reload_acl($verify);
 			if ($reload_error !== null) {
 				$run['run_error'] = $reload_error;
-				$alert->send('failure', 'FreeSWITCH ACL reload failed: '.$feed['feed_name'], "The new entries were saved, but FreeSWITCH did not reload its ACL.\n\nFeed: ".$feed['feed_name']."\nError: ".$reload_error."\n\nThe next successful reload (reloadacl) applies them.");
+				$alert->send('failure', 'FreeSWITCH ACL reload failed: '.$feed['feed_name'].': '.$reload_error, "The new entries were saved, but FreeSWITCH did not reload its ACL.\n\nFeed: ".$feed['feed_name']."\nError: ".$reload_error."\n\nThe next successful reload (reloadacl) applies them.");
 			}
 		}
 		$run['run_status'] = $changed ? 'applied' : 'unchanged';
