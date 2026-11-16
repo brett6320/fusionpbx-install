@@ -34,6 +34,11 @@ cd /usr/src/x-install
   behind (for example a php-fpm setting that points at a deleted
   `/etc/fusionpbx`).
 
+## Deploy on AWS
+
+A CloudFormation template for a single AWS host is in
+[deploy/aws/](deploy/aws/README.md).
+
 ## Upgrade
 
 ```sh
@@ -133,11 +138,6 @@ Elastic IP; the template grants this.
 - Telnyx must also know the Elastic IP: add it to the IP authentication of
   your Telnyx connection.
 
-## Testing
-
-```sh
-test/lint.sh                    # shellcheck, php -l, python syntax (needs Docker)
-test/install-test.sh [bookworm|trixie] [--keep]  # full install + upgrade in a systemd container
 ## Backup and restore
 
 `x-backup` runs nightly (`x-backup.timer`, settings in `config.sh`) and writes
@@ -227,10 +227,17 @@ turn the old host off, run `systemctl enable --now freeswitch`, then run
 
 ```
 
+## Testing
+
+```sh
+test/lint.sh                    # shellcheck, php -l, python syntax (needs Docker)
+test/install-test.sh [bookworm|trixie] [--keep]  # full install + upgrade in a systemd container
+test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on a fresh host and in place
+```
+
 ## Known limitations
 
 - IVR schedules use upstream's time condition handling, including its time
-test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on a fresh host and in place
   zone behavior. They have not been tested with real calls.
 - Rebooting an endpoint reboots every phone that shares its extension.
 - The provision overlay cannot stop one tenant from reading another tenant's

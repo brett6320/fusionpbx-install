@@ -1,0 +1,15 @@
+{
+  "SelectionName": "fusionpbx-instances",
+  "IamRoleArn": "arn:aws:iam::ACCOUNT_ID:role/service-role/AWSBackupDefaultServiceRole",
+  "Resources": [
+    "arn:aws:ec2:*:*:instance/*"
+  ],
+  "Conditions": {
+    "StringEquals": [
+      {
+        "ConditionKey": "aws:ResourceTag/BackupPlan",
+        "ConditionValue": "fusionpbx"
+      }
+    ]
+  }
+}

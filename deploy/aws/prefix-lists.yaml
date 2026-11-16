@@ -1,0 +1,222 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Customer-managed IPv4 prefix lists for the FusionPBX security groups
+  (fusionpbx.yaml): VoIP endpoints, Telnyx signalling, Telnyx media, web
+  management and SSH.
+
+# Endpoint, web and SSH entries come from comma-separated parameters, at most
+# 6 each. CloudFormation can't loop over a list here, so each list has fixed
+# slots: the parameter is padded with empty values and a condition per slot
+# drops the empty ones. A 7th slot makes EC2 reject a list given more than 6
+# entries instead of silently dropping them.
+# The Telnyx entries are Telnyx's published addresses (https://sip.telnyx.com,
+# voice.json version 2026-05-25); recheck them there when Telnyx changes them.
+# A security group rule that references a list counts as its MaxEntries
+# against the rules-per-group quota (default 60): endpoints 3 x 6, Telnyx
+# signalling 2 x 25, Telnyx media 1 x 30, web 2 x 6, SSH 2 x 6.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Trusted addresses}
+        Parameters: [EndpointCidrs, WebCidrs, SshCidrs]
+      - Label: {default: Tags}
+        Parameters: [Environment, ClientID, AppCatID]
+
+Parameters:
+  EndpointCidrs:
+    Type: CommaDelimitedList
+    Description: IPv4 CIDRs of VoIP endpoints (phones, softphones). Comma-separated, at most 6, no duplicates.
+
+  WebCidrs:
+    Type: CommaDelimitedList
+    Description: IPv4 CIDRs allowed to reach the web UI. Comma-separated, at most 6, no duplicates.
+
+  SshCidrs:
+    Type: CommaDelimitedList
+    Description: IPv4 CIDRs allowed to SSH. Comma-separated, at most 6, no duplicates.
+
+  Environment:
+    Type: String
+    MinLength: 1
+    Description: Environment tag on every prefix list.
+
+  ClientID:
+    Type: String
+    MinLength: 1
+    Description: ClientID tag on every prefix list.
+
+  AppCatID:
+    Type: String
+    MinLength: 1
+    Description: AppCatID tag on every prefix list.
+
+Conditions:
+  HasEndpoint0: !Not [!Equals [!Select [0, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]], ""]]
+  HasEndpoint1: !Not [!Equals [!Select [1, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]], ""]]
+  HasEndpoint2: !Not [!Equals [!Select [2, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]], ""]]
+  HasEndpoint3: !Not [!Equals [!Select [3, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]], ""]]
+  HasEndpoint4: !Not [!Equals [!Select [4, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]], ""]]
+  HasEndpoint5: !Not [!Equals [!Select [5, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]], ""]]
+  HasEndpoint6: !Not [!Equals [!Select [6, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]], ""]]
+  HasWeb0: !Not [!Equals [!Select [0, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]], ""]]
+  HasWeb1: !Not [!Equals [!Select [1, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]], ""]]
+  HasWeb2: !Not [!Equals [!Select [2, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]], ""]]
+  HasWeb3: !Not [!Equals [!Select [3, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]], ""]]
+  HasWeb4: !Not [!Equals [!Select [4, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]], ""]]
+  HasWeb5: !Not [!Equals [!Select [5, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]], ""]]
+  HasWeb6: !Not [!Equals [!Select [6, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]], ""]]
+  HasSsh0: !Not [!Equals [!Select [0, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]], ""]]
+  HasSsh1: !Not [!Equals [!Select [1, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]], ""]]
+  HasSsh2: !Not [!Equals [!Select [2, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]], ""]]
+  HasSsh3: !Not [!Equals [!Select [3, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]], ""]]
+  HasSsh4: !Not [!Equals [!Select [4, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]], ""]]
+  HasSsh5: !Not [!Equals [!Select [5, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]], ""]]
+  HasSsh6: !Not [!Equals [!Select [6, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]], ""]]
+
+Resources:
+  EndpointPrefixList:
+    Type: AWS::EC2::PrefixList
+    Properties:
+      PrefixListName: !Sub ${AWS::StackName}-endpoints
+      AddressFamily: IPv4
+      MaxEntries: 6
+      Entries:
+        - !If [HasEndpoint0, {Cidr: !Select [0, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasEndpoint1, {Cidr: !Select [1, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasEndpoint2, {Cidr: !Select [2, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasEndpoint3, {Cidr: !Select [3, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasEndpoint4, {Cidr: !Select [4, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasEndpoint5, {Cidr: !Select [5, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasEndpoint6, {Cidr: !Select [6, !Split [",", !Join ["", [!Join [",", !Ref EndpointCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-endpoints"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  # Telnyx sends calls from its regional SIP proxies; the UAC (SIP Attach)
+  # anycast addresses carry both signalling and media.
+  TelnyxSignallingPrefixList:
+    Type: AWS::EC2::PrefixList
+    Properties:
+      PrefixListName: !Sub ${AWS::StackName}-telnyx-signalling
+      AddressFamily: IPv4
+      MaxEntries: 25
+      Entries:
+        - {Cidr: 192.76.120.10/32, Description: Telnyx SIP US primary}
+        - {Cidr: 64.16.250.10/32, Description: Telnyx SIP US secondary}
+        - {Cidr: 185.246.41.140/32, Description: Telnyx SIP Europe}
+        - {Cidr: 185.246.41.141/32, Description: Telnyx SIP Europe}
+        - {Cidr: 103.115.244.145/32, Description: Telnyx SIP Australia}
+        - {Cidr: 103.115.244.146/32, Description: Telnyx SIP Australia}
+        - {Cidr: 192.76.120.31/32, Description: Telnyx SIP Canada}
+        - {Cidr: 64.16.250.13/32, Description: Telnyx SIP Canada}
+        - {Cidr: 185.246.42.128/32, Description: Telnyx SIP Middle East}
+        - {Cidr: 185.246.42.129/32, Description: Telnyx SIP Middle East}
+        - {Cidr: 103.115.244.158/32, Description: Telnyx SIP Asia}
+        - {Cidr: 103.115.244.159/32, Description: Telnyx SIP Asia}
+        - {Cidr: 192.76.120.14/32, Description: Telnyx UAC anycast US}
+        - {Cidr: 192.76.120.72/32, Description: Telnyx UAC anycast Europe}
+        - {Cidr: 192.76.120.73/32, Description: Telnyx UAC anycast Australia}
+        - {Cidr: 192.76.120.74/32, Description: Telnyx UAC anycast Canada}
+        - {Cidr: 192.76.120.75/32, Description: Telnyx UAC anycast Middle East}
+        - {Cidr: 192.76.120.76/32, Description: Telnyx UAC anycast Asia}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-telnyx-signalling"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  # Telnyx media and TURN relay subnets, plus the UAC anycast addresses.
+  TelnyxMediaPrefixList:
+    Type: AWS::EC2::PrefixList
+    Properties:
+      PrefixListName: !Sub ${AWS::StackName}-telnyx-media
+      AddressFamily: IPv4
+      MaxEntries: 30
+      Entries:
+        - {Cidr: 36.255.198.128/25, Description: Telnyx media}
+        - {Cidr: 50.114.136.128/25, Description: Telnyx media}
+        - {Cidr: 50.114.144.0/21, Description: Telnyx media}
+        - {Cidr: 64.16.226.0/24, Description: Telnyx media}
+        - {Cidr: 64.16.227.0/24, Description: Telnyx media}
+        - {Cidr: 64.16.228.0/24, Description: Telnyx media}
+        - {Cidr: 64.16.229.0/24, Description: Telnyx media}
+        - {Cidr: 64.16.230.0/24, Description: Telnyx media}
+        - {Cidr: 64.16.248.0/24, Description: Telnyx media}
+        - {Cidr: 64.16.249.0/24, Description: Telnyx media}
+        - {Cidr: 64.16.246.96/27, Description: Telnyx TURN relay}
+        - {Cidr: 64.16.246.128/26, Description: Telnyx TURN relay}
+        - {Cidr: 103.115.244.128/25, Description: Telnyx media}
+        - {Cidr: 103.115.247.0/24, Description: Telnyx media}
+        - {Cidr: 185.246.41.128/25, Description: Telnyx media}
+        - {Cidr: 185.246.42.128/28, Description: Telnyx media}
+        - {Cidr: 192.76.120.14/32, Description: Telnyx UAC anycast US}
+        - {Cidr: 192.76.120.72/32, Description: Telnyx UAC anycast Europe}
+        - {Cidr: 192.76.120.73/32, Description: Telnyx UAC anycast Australia}
+        - {Cidr: 192.76.120.74/32, Description: Telnyx UAC anycast Canada}
+        - {Cidr: 192.76.120.75/32, Description: Telnyx UAC anycast Middle East}
+        - {Cidr: 192.76.120.76/32, Description: Telnyx UAC anycast Asia}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-telnyx-media"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  WebPrefixList:
+    Type: AWS::EC2::PrefixList
+    Properties:
+      PrefixListName: !Sub ${AWS::StackName}-web
+      AddressFamily: IPv4
+      MaxEntries: 6
+      Entries:
+        - !If [HasWeb0, {Cidr: !Select [0, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasWeb1, {Cidr: !Select [1, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasWeb2, {Cidr: !Select [2, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasWeb3, {Cidr: !Select [3, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasWeb4, {Cidr: !Select [4, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasWeb5, {Cidr: !Select [5, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasWeb6, {Cidr: !Select [6, !Split [",", !Join ["", [!Join [",", !Ref WebCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-web"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  SshPrefixList:
+    Type: AWS::EC2::PrefixList
+    Properties:
+      PrefixListName: !Sub ${AWS::StackName}-ssh
+      AddressFamily: IPv4
+      MaxEntries: 6
+      Entries:
+        - !If [HasSsh0, {Cidr: !Select [0, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasSsh1, {Cidr: !Select [1, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasSsh2, {Cidr: !Select [2, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasSsh3, {Cidr: !Select [3, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasSsh4, {Cidr: !Select [4, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasSsh5, {Cidr: !Select [5, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+        - !If [HasSsh6, {Cidr: !Select [6, !Split [",", !Join ["", [!Join [",", !Ref SshCidrs], ",,,,,,,"]]]]}, !Ref AWS::NoValue]
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-ssh"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+Outputs:
+  EndpointPrefixListId:
+    Value: !Ref EndpointPrefixList
+    Export: {Name: !Sub "${AWS::StackName}-EndpointPrefixListId"}
+  TelnyxSignallingPrefixListId:
+    Value: !Ref TelnyxSignallingPrefixList
+    Export: {Name: !Sub "${AWS::StackName}-TelnyxSignallingPrefixListId"}
+  TelnyxMediaPrefixListId:
+    Value: !Ref TelnyxMediaPrefixList
+    Export: {Name: !Sub "${AWS::StackName}-TelnyxMediaPrefixListId"}
+  WebPrefixListId:
+    Value: !Ref WebPrefixList
+    Export: {Name: !Sub "${AWS::StackName}-WebPrefixListId"}
+  SshPrefixListId:
+    Value: !Ref SshPrefixList
+    Export: {Name: !Sub "${AWS::StackName}-SshPrefixListId"}

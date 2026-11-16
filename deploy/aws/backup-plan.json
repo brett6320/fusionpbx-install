@@ -1,0 +1,27 @@
+{
+  "BackupPlanName": "fusionpbx",
+  "Rules": [
+    {
+      "RuleName": "daily",
+      "TargetBackupVaultName": "Default",
+      "ScheduleExpression": "cron(30 3 * * ? *)",
+      "ScheduleExpressionTimezone": "UTC",
+      "StartWindowMinutes": 60,
+      "CompletionWindowMinutes": 240,
+      "Lifecycle": {
+        "DeleteAfterDays": 35
+      }
+    },
+    {
+      "RuleName": "monthly",
+      "TargetBackupVaultName": "Default",
+      "ScheduleExpression": "cron(30 3 1 * ? *)",
+      "ScheduleExpressionTimezone": "UTC",
+      "StartWindowMinutes": 60,
+      "CompletionWindowMinutes": 240,
+      "Lifecycle": {
+        "DeleteAfterDays": 365
+      }
+    }
+  ]
+}
