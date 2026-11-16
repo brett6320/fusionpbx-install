@@ -326,6 +326,21 @@ one) matches is refused, which covers open ended patterns such as a custom
 prefix `^9(\d*)$`. Any other unused number can be entered instead.
 `limit > ivr_menus` applies as in the IVR Menu editor.
 
+## Fax setup
+
+**Applications > Fax Setup** creates a domain's fax server in one step (fax
+extension, name and email, created the same way as in the Fax Server app) and
+holds the domain's fax cover logo. The **Fax Extension** is filled in with a
+suggestion: the first free number of `fax > extension_range` when that is set,
+otherwise a random unused number. Nobody needs to dial it, since inbound
+routes send faxes to it. The suggestion skips numbers any enabled outbound
+route of the domain matches, so a call sent to a disabled fax server doesn't
+go out to a carrier. The stock route options cover every length up to 20
+digits and the Fax Server editor keeps 15, so the suggestion is 15 digits when
+no route matches that length, and shorter otherwise (e.g. 9 digits with the
+international, 11 and 10 digit routes). An outbound route added later is not
+checked against existing fax numbers. You can type your own number instead.
+
 ## Email templates
 
 The installer rewords upstream's English email templates (voicemail,

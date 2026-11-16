@@ -19,7 +19,7 @@ $text['label-current_logo']['en-us'] = "Current Logo";
 $text['label-no_logo']['en-us'] = "No logo has been uploaded.";
 $text['label-foreign_logo']['en-us'] = "The cover logo for this domain is set to a value that was not uploaded here. Uploading a logo will replace it.";
 
-$text['description-fax_extension']['en-us'] = "Enter the fax extension number. Digits only.";
+$text['description-fax_extension']['en-us'] = "The fax extension number, digits only. The suggested number is unused and no outbound route matches it; nobody needs to dial it, since inbound routes send faxes to it. Uses the first free number of fax > extension_range when that is set.";
 $text['description-fax_name']['en-us'] = "Enter the name of the fax server.";
 $text['description-fax_email']['en-us'] = "Received faxes are emailed to this address. Separate multiple addresses with commas.";
 $text['description-logo_file']['en-us'] = "PNG or JPEG, up to 1 MB and 2000 x 2000 pixels. The image is re-encoded as PNG when saved.";
