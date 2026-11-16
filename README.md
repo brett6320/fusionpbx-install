@@ -92,11 +92,36 @@ A default install has a self-signed certificate, which most phones reject.
 Install a trusted certificate (upstream ships a Let's Encrypt script) or turn
 off certificate checks on the phones.
 
+## Phone codec order
+
+One codec order for every phone: **Advanced > Default Settings > Provision >
+`x_codec_1` to `x_codec_8`**, highest priority first. The installer seeds
+G.722, PCMU, PCMA, G.723.1, G.729A/B, G.726-32, iLBC, OPUS; changes made there
+are kept on upgrade. Codec names: `OPUS`, `G.722`, `PCMU`, `PCMA`, `G.723.1`,
+`G.729A/B`, `G.726-32`, `iLBC`. To skip a slot, disable it or leave it empty in
+Default Settings (an empty domain setting does not override the default).
+
+Upstream's templates don't read it; the Provision Templates overrides do.
+Each override maps the names to its phone's format, skips codecs that phone
+lacks (for example OPUS on a DP750), and fills its remaining slots. Upstream
+Yealink templates keep their own `yealink_codec_*` settings. Phones pick up a
+change at their next provisioning.
+
 ## Theme
 
 The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,
 once: **Advanced > Default Settings > Domain > theme**. A theme you choose there
 later is kept, and domains and users can still pick their own.
+
+## Time sync
+
+chrony keeps the host clock synced, and FreeSWITCH resyncs to it every
+`timesync_interval` minutes. On EC2 (detected from the instance hardware,
+with or without the AWS settings file) chrony also uses the Amazon Time Sync
+Service at `169.254.169.123`, which works even when outbound NTP to the
+internet is blocked. The installer writes
+`/etc/chrony/sources.d/x-aws-time.sources`, unless chrony already lists that
+address, and removes it off EC2.
 
 ## Web login sessions
 
@@ -175,6 +200,15 @@ refuses a new number an extension or another dialplan entry of the domain
 already uses (an existing schedule keeps its number), and lists the inbound
 routes pointing at the schedule, from Destinations and Dialplan > Inbound
 Routes.
+
+## Email templates
+
+The installer rewords upstream's English email templates (voicemail,
+transcription, missed call, fax, emergency call, email test) in Advanced >
+Email Templates, and fixes the fax subject that read "Subject, Fax to: …
+SENT". A template is replaced only while it still has upstream's exact text,
+so templates edited in the UI are left alone. Carrier ACL alerts use the
+subject prefix `[Carrier ACL]`.
 
 ## Carrier credentials and encryption
 

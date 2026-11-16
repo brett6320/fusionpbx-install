@@ -29,8 +29,17 @@ db "insert into v_devices (device_uuid, domain_uuid, device_address, device_vend
 check "provisioning requires auth (401)" test "$(curl -sk -o /dev/null -w '%{http_code}' -H "Host: $test_domain" "https://127.0.0.1/app/provision/?mac=0011223344aa&file=0011223344aa.cfg")" = 401
 db "delete from v_devices where device_uuid = '$test_device'" >/dev/null
 
+#phone codec order for the provisioning templates
+check "codec order seeded" test "$(db "select string_agg(default_setting_value, ',' order by default_setting_subcategory) from v_default_settings where default_setting_category = 'provision' and default_setting_subcategory like 'x\_codec\__' and default_setting_enabled")" = "G.722,PCMU,PCMA,G.723.1,G.729A/B,G.726-32,iLBC,OPUS"
+
 #dark theme is the default (core/themes: Cobalt Blue)
 check "dark theme is the default" test "$(db "select default_setting_value from v_default_settings where default_setting_uuid='b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' and default_setting_enabled")" = "eda762b3-e356-4225-a394-38b5f092fd44"
+
+#upstream's English email templates reworded (x_local_defaults); the fax subject no longer reads "Subject, Fax to: ..."
+# shellcheck disable=SC2016  # FreeSWITCH variables, literal
+check "voicemail email reworded" test "$(db "select template_subject from v_email_templates where email_template_uuid = 'fbd0c8ea-6adb-4f8b-92cf-00e9087e3568'")" = 'New voicemail from ${caller_id_name} (${caller_id_number}), ${message_duration}'
+# shellcheck disable=SC2016
+check "fax email reworded" test "$(db "select template_subject from v_email_templates where email_template_uuid = 'b1eefbfc-c008-4c82-b93f-6a6df237aeaa'")" = 'Fax to ${number_dialed} sent'
 
 #our apps: copied, syntactically valid on the target PHP, registered
 for app in /usr/src/x-install/apps/x_*/; do
@@ -53,6 +62,8 @@ check "php-fpm session lifetime is $session_lifetime" test "$(PHP_INI_SCAN_DIR="
 
 #time sync
 check "chrony active" systemctl is-active chrony
+#a container is not EC2, so the Amazon Time Sync Service is not configured
+check "no Amazon time source off EC2" test ! -e /etc/chrony/sources.d/x-aws-time.sources
 check "clock sync timer enabled" systemctl is-enabled x-freeswitch-clock-sync.timer
 check "clock sync runs" systemctl start x-freeswitch-clock-sync.service
 
