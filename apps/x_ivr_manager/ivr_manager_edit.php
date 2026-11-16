@@ -275,7 +275,7 @@
 				}
 				//show the form again with the posted values
 				$error_key = is_string($manager->message) ? $manager->message : '';
-				if ($error_key === 'message-schedule_number_in_use') {
+				if ($error_key === 'message-schedule_number_in_use' || $error_key === 'message-schedule_number_routable') {
 					message::add(sprintf($text[$error_key], $schedule_form['dialplan_number'], $manager->number_used_by), 'negative');
 				}
 				else {
@@ -867,7 +867,7 @@
 		echo "<tr>\n";
 		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-schedule_number']."</td>\n";
 		echo "<td class='vtable' align='left'>\n";
-		echo "	<input class='formfld' type='text' name='dialplan_number' maxlength='20' pattern='[0-9]+' inputmode='numeric' value=\"".escape($schedule_form['dialplan_number'])."\" required='required'>\n";
+		echo "	<input class='formfld' type='text' name='dialplan_number' maxlength='32' pattern='[0-9]+' inputmode='numeric' style='width: 22em;' value=\"".escape($schedule_form['dialplan_number'])."\" required='required'>\n";
 		echo "	<br />".$text['description-schedule_number']."\n";
 		if (!empty($schedule)) {
 			echo "	<br /><br /><b>".$text['label-schedule_routes']."</b> ";

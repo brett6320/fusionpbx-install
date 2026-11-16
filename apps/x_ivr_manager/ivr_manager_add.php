@@ -84,7 +84,7 @@
 			unset($error_key);
 	}
 	else {
-		$form['ivr_menu_extension'] = $manager->generate_ivr_extension();
+		$form['ivr_menu_extension'] = $manager->generate_extension();
 		if ($form['ivr_menu_extension'] === '') {
 			message::add($text['message-ivr_extension_generate_failed'], 'negative');
 		}
