@@ -53,6 +53,8 @@ check "php-fpm session lifetime is $session_lifetime" test "$(PHP_INI_SCAN_DIR="
 
 #time sync
 check "chrony active" systemctl is-active chrony
+#a container is not EC2, so the Amazon Time Sync Service is not configured
+check "no Amazon time source off EC2" test ! -e /etc/chrony/sources.d/x-aws-time.sources
 check "clock sync timer enabled" systemctl is-enabled x-freeswitch-clock-sync.timer
 check "clock sync runs" systemctl start x-freeswitch-clock-sync.service
 

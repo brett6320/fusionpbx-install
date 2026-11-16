@@ -98,6 +98,16 @@ The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,
 once: **Advanced > Default Settings > Domain > theme**. A theme you choose there
 later is kept, and domains and users can still pick their own.
 
+## Time sync
+
+chrony keeps the host clock synced, and FreeSWITCH resyncs to it every
+`timesync_interval` minutes. On EC2 (detected from the instance hardware,
+with or without the AWS settings file) chrony also uses the Amazon Time Sync
+Service at `169.254.169.123`, which works even when outbound NTP to the
+internet is blocked. The installer writes
+`/etc/chrony/sources.d/x-aws-time.sources`, unless chrony already lists that
+address, and removes it off EC2.
+
 ## Web login sessions
 
 A web login ends about 8 hours after its last activity (`session_lifetime` in
