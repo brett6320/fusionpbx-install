@@ -271,7 +271,13 @@
 		$z++;
 		$apps[$x]['db'][$y]['fields'][$z]['name'] = "reboot_trigger";
 		$apps[$x]['db'][$y]['fields'][$z]['type'] = "text";
-		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "manual or schedule.";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "manual, schedule or firmware.";
+		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "firmware_rollout_uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['type']['mysql'] = "char(36)";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "Firmware rollout (Provision Templates > Firmware) that queued the reboot. Not a foreign key so the log survives the rollout.";
 		$z++;
 		$apps[$x]['db'][$y]['fields'][$z]['name'] = "requested_by_user_uuid";
 		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = "uuid";

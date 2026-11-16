@@ -6,6 +6,8 @@
 #  - /usr/share/fusionpbx/templates (www-data) and the provision symlink into the merged tree
 #  - initial/refresh build of the merged tree as www-data (no database needed unless domain overrides exist)
 #  - nginx location ^~ /provision-assets/ in the :80 and :443 server blocks, between marker comments
+#  - nginx locations for /provision-firmware/ (front, a 404 for none, the internal file location) in the same
+#    blocks, and the connection limit zone they use in /etc/nginx/conf.d/x_provision_firmware.conf
 #
 # Never touches provision.enabled, provision.template_dir, overlay files or assets.
 #
@@ -31,6 +33,12 @@ templates_parent=/usr/share/fusionpbx/templates
 link_path=$templates_parent/provision
 link_target=$state_root/merged/current
 nginx_conf=/etc/nginx/sites-available/fusionpbx
+nginx_zone_conf=/etc/nginx/conf.d/x_provision_firmware.conf
+#connections per address on /provision-firmware/ (config.sh; many phones behind one NAT address need more)
+firmware_conn_limit=${provision_firmware_conn_limit:-16}
+case "$firmware_conn_limit" in
+	''|*[!0-9]*|0) warn "x_provision_overlay: provision_firmware_conn_limit must be a positive number; using 16."; firmware_conn_limit=16 ;;
+esac
 marker_begin='# BEGIN x_provision_overlay'
 marker_end='# END x_provision_overlay'
 
@@ -57,7 +65,7 @@ runuser -u www-data -- find "$app_dir" -type f -exec chmod 0640 {} +
 info "x_provision_overlay: state directories"
 install -d -m 0750 -o www-data -g www-data /var/lib/fusionpbx
 install -d -m 0750 -o www-data -g www-data "$state_root"
-for dir in global domains assets merged; do
+for dir in global domains assets merged firmware; do
 	install -d -m 0750 -o www-data -g www-data "$state_root/$dir"
 done
 [ -e "$state_root/.lock" ] || install -m 0640 -o www-data -g www-data /dev/null "$state_root/.lock"
@@ -119,6 +127,29 @@ asset_block() {
 	printf '\t\t%s\n' "fastcgi_param   SCRIPT_FILENAME $fusionpbx_dir/app/x_provision_overlay/assets.php;"
 	printf '\t\t%s\n' "fastcgi_param   SCRIPT_NAME /app/x_provision_overlay/assets.php;"
 	printf '\t%s\n' "}"
+	printf '\t%s\n' "#phone firmware (app/x_provision_overlay/firmware.php); none is a 404 without php; files go out through"
+	printf '\t%s\n' "#the internal location (X-Accel-Redirect), never by their path on disk"
+	printf '\t%s\n' "location ^~ /provision-firmware/none/ {"
+	printf '\t\t%s\n' "return 404;"
+	printf '\t%s\n' "}"
+	printf '\t%s\n' "location ^~ /provision-firmware/ {"
+	printf '\t\t%s\n' "limit_except GET {"
+	printf '\t\t\t%s\n' "deny all;"
+	printf '\t\t%s\n' "}"
+	printf '\t\t%s\n' "limit_conn x_provision_firmware $firmware_conn_limit;"
+	printf '\t\t%s\n' "fastcgi_pass unix:$socket;"
+	printf '\t\t%s\n' "include fastcgi_params;"
+	printf '\t\t%s\n' "fastcgi_param   SCRIPT_FILENAME $fusionpbx_dir/app/x_provision_overlay/firmware.php;"
+	printf '\t\t%s\n' "fastcgi_param   SCRIPT_NAME /app/x_provision_overlay/firmware.php;"
+	printf '\t%s\n' "}"
+	printf '\t%s\n' "location ^~ /x-provision-firmware-files/ {"
+	printf '\t\t%s\n' "internal;"
+	printf '\t\t%s\n' "alias $state_root/firmware/;"
+	printf '\t\t%s\n' "types { }"
+	printf '\t\t%s\n' "default_type application/octet-stream;"
+	printf '\t\t%s\n' "add_header X-Content-Type-Options nosniff always;"
+	printf '\t\t%s\n' "limit_conn x_provision_firmware $firmware_conn_limit;"
+	printf '\t%s\n' "}"
 	printf '\t%s\n' "$marker_end"
 }
 
@@ -152,6 +183,17 @@ update_nginx() {
 	if [ "$begin_count" != "$end_count" ]; then
 		warn "x_provision_overlay: unbalanced '$marker_begin' / '$marker_end' markers in $nginx_conf; fix them by hand and rerun. nginx not changed."
 		return 0
+	fi
+
+	#connection limit zone of the firmware locations (http context; Debian's nginx.conf includes conf.d/*.conf)
+	local zone_written=false
+	# shellcheck disable=SC2016  # nginx variable, literal
+	if ! grep -qsx 'limit_conn_zone $binary_remote_addr zone=x_provision_firmware:1m;' "$nginx_zone_conf"; then
+		# shellcheck disable=SC2016
+		printf '%s\n' '# x_provision_overlay: per-address connection limit of /provision-firmware/; managed by the installer' \
+			'limit_conn_zone $binary_remote_addr zone=x_provision_firmware:1m;' > "$nginx_zone_conf"
+		chmod 0644 "$nginx_zone_conf"
+		zone_written=true
 	fi
 
 	#current file without our blocks
@@ -231,6 +273,7 @@ update_nginx() {
 	cat "$work/new" > "$nginx_conf"
 	if ! nginx -t; then
 		cat "$work/backup" > "$nginx_conf"
+		[ "$zone_written" = true ] && rm -f "$nginx_zone_conf"
 		warn "x_provision_overlay: nginx -t failed with the asset location; $nginx_conf restored."
 		return 0
 	fi

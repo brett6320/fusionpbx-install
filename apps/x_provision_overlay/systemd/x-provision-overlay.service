@@ -10,6 +10,8 @@ Group=www-data
 WorkingDirectory=/var/www/fusionpbx
 ;wallpaper files replaced or removed more than a day ago, assets of deleted domains; a failure does not stop the build
 ExecStart=-/usr/bin/php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/wallpapers.php --cleanup
+;files of deleted firmware releases, downloads older than 90 days; a failure does not stop the build
+ExecStart=-/usr/bin/php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/firmware.php --cleanup
 ExecStart=/usr/bin/php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/build.php --build
 TimeoutStartSec=10min
 Nice=10

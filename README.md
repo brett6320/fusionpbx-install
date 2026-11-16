@@ -192,6 +192,54 @@ sync by hand: `runuser -u www-data -- php
 /var/www/fusionpbx/app/x_provision_overlay/resources/cli/wallpapers.php --sync
 [--domain <uuid>]`.
 
+## Phone firmware
+
+**Accounts > Provision Templates > Firmware** points the Yealink and
+Grandstream phones of a domain at firmware files kept on this server, and
+moves them to a new release in batches. Design and limits:
+[docs/design/provision_firmware.md](docs/design/provision_firmware.md). Not
+yet tried on phones; try one device of each model before a whole domain.
+
+- **Library** (superadmin): import the Yealink `.rom` from the vendor zip (the
+  family and version come from the file name, e.g. `T46S(T48S,T42S,T41S)-66.86.0.15.rom`
+  is family 66) or the Grandstream `<model>fw.bin` with its version and the
+  models it serves. Files larger than PHP's upload limit: `runuser -u www-data
+  -- php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/firmware.php
+  --import <file> [--version <v>] [--models <list>] [--note <text>]`
+  (www-data must be able to read the file). A release in use by a domain, a
+  device, a rollout or any setting can't be deleted; a deleted release's file
+  stays downloadable for a day.
+- **Domain** (admin): a default per family (a release, **None**, or **Unset**:
+  upstream behavior, no rows written), and a per-device override. The family
+  is read from the phone: a Yealink's from the version it reports, so a
+  Yealink that has never fetched its configuration isn't managed yet; a
+  Grandstream's from its model.
+- **Rollout**: one per family and domain. Start batches (picked devices, or
+  the first N); each batch gets the release written, is told to fetch its
+  configuration (`check-sync` / `resync`), and is rebooted through the
+  endpoint manager's queue (trigger "Firmware rollout") once it has, unless it
+  already reports the release. **Finish** makes the release the domain
+  default; **Abort** returns devices that haven't fetched since their batch
+  started and keeps the others on the release (a later rollout can take
+  them). A Yealink is rebooted no sooner than 20 minutes after it fetched (it
+  may be flashing the new ROM), a Grandstream 5 minutes; a queued reboot is
+  cancelled once the phone reports the release.
+
+Device settings are written as for wallpapers (every 2 minutes by
+`x-provision-firmware.timer`, which also moves rollouts on, and right after a
+change): `yealink_firmware_url` plus the template's `yealink_firmware_<model>`
+variables, or `grandstream_firmware_path`. A value set elsewhere wins, and
+disabling a device's firmware rows opts it out, exactly as for wallpapers.
+
+Phones download from `http://<domain>/provision-firmware/<release>/...`:
+GET/HEAD only, at most `provision_firmware_conn_limit` (config.sh, default
+16) connections per address, upstream's `provision.cidr`
+allow-list applies, provisioning HTTP auth does not (vendor files, no
+secrets). `.../none/...` is a 404. Files go out through an internal nginx
+location as `application/octet-stream` attachments. Downloads are listed on
+the library page for 90 days. The files are under
+`/var/lib/fusionpbx/provision_overlay/firmware/`, which backups include.
+
 ## Theme
 
 The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,

@@ -1,0 +1,9 @@
+[Unit]
+Description=Link phones to their firmware when the firmware page asks for it
+
+[Path]
+PathExists=/var/lib/fusionpbx/provision_overlay/.firmware-sync.request
+Unit=x-provision-firmware.service
+
+[Install]
+WantedBy=multi-user.target
