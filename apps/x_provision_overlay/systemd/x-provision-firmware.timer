@@ -1,0 +1,11 @@
+[Unit]
+Description=Link phones to their firmware and move firmware rollouts on every 2 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=x-provision-firmware.service
+
+[Install]
+WantedBy=timers.target

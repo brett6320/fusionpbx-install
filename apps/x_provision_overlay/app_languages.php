@@ -179,4 +179,136 @@ $text['error-wallpaper_sync']['en-us'] = "The image was saved but the phones cou
 $text['error-wallpaper_analysis']['en-us'] = "The devices could not be checked. The details are in the system log.";
 $text['error-wallpaper_meta']['en-us'] = "The wallpaper list of this scope cannot be read, so wallpapers are not changed and phones are not relinked until it is fixed. The details are in the system log.";
 
+$text['title-x_provision_overlay_firmware']['en-us'] = "Phone Firmware";
+
+$text['header-x_provision_overlay_firmware']['en-us'] = "Phone Firmware";
+
+$text['header-firmware_import']['en-us'] = "Import Firmware";
+
+$text['header-firmware_downloads']['en-us'] = "Recent Downloads";
+
+$text['header-firmware_families']['en-us'] = "Firmware Families";
+
+$text['header-firmware_devices']['en-us'] = "Devices";
+
+$text['header-firmware_rollouts']['en-us'] = "Rollouts";
+
+$text['header-firmware_rollout_devices']['en-us'] = "Devices in This Rollout";
+
+$text['header-firmware_batch']['en-us'] = "Next Batch";
+
+$text['description-x_provision_overlay_firmware']['en-us'] = "Firmware for the Yealink and Grandstream phones of this domain. Set a default release per firmware family, override it per device, or move phones to a release in batches with a rollout. Unset keeps the phones on the upstream behavior; None stops them from finding firmware. Phones are linked within two minutes and pick the change up at their next configuration fetch; a rollout also notifies and reboots them.";
+$text['description-firmware_library']['en-us'] = "Firmware files available to every domain. Yealink: import the .rom from the vendor's zip; the family and version come from the file name. Grandstream: import the MODELfw.bin and enter its version. A release that a domain, a device or a rollout uses cannot be deleted.";
+$text['description-firmware_file']['en-us'] = "Yealink .rom or Grandstream *fw.bin, up to {max} (PHP upload limit; larger files: php resources/cli/firmware.php --import).";
+$text['description-firmware_version']['en-us'] = "Required for Grandstream (e.g. 1.0.11.79). Yealink: taken from the file name.";
+$text['description-firmware_models']['en-us'] = "Grandstream only: models the file serves, comma separated (e.g. GXP2170, GXP2160). Default: the model in the file name.";
+$text['description-firmware_defaults']['en-us'] = "Default release per family for this domain. Yealink families are the first number of the firmware version (66 for 66.86.0.15), known once a phone has fetched its configuration.";
+$text['description-firmware_devices']['en-us'] = "A value set elsewhere wins: a domain setting, a device profile setting or a device setting of the same name. To keep a device on its current firmware, disable its firmware rows under the device's settings.";
+$text['description-firmware_rollout']['en-us'] = "Each batch gets the release written, is notified to fetch its configuration, and is rebooted once it has. Finish sets the release as the domain default for the family; Abort returns devices that have not fetched yet and keeps the others on the release as manual targets.";
+$text['description-firmware_batch']['en-us'] = "Pick devices, or leave all unticked to take the first ones in the list.";
+
+$text['label-firmware_file']['en-us'] = "File";
+$text['label-firmware_version']['en-us'] = "Version";
+$text['label-firmware_models']['en-us'] = "Models";
+$text['label-firmware_note']['en-us'] = "Note";
+$text['label-firmware_size']['en-us'] = "Size";
+$text['label-firmware_uploaded']['en-us'] = "Uploaded";
+$text['label-firmware_family']['en-us'] = "Family";
+$text['label-firmware_rom_family']['en-us'] = "ROM {family}";
+$text['label-firmware_none_imported']['en-us'] = "No firmware imported.";
+$text['label-firmware_time']['en-us'] = "Time";
+$text['label-firmware_address']['en-us'] = "Address";
+$text['label-firmware_agent']['en-us'] = "User Agent";
+$text['label-firmware_devices']['en-us'] = "Devices";
+$text['label-firmware_default']['en-us'] = "Domain Default";
+$text['label-firmware_rollout']['en-us'] = "Rollout";
+$text['label-firmware_rollout_active']['en-us'] = "Rolling out {version}";
+$text['label-firmware_rollout_from']['en-us'] = "Previous default";
+$text['label-firmware_rollout_by']['en-us'] = "Started by";
+$text['label-firmware_managed_current']['en-us'] = "{managed} managed, {current} current";
+$text['label-firmware_no_families']['en-us'] = "No firmware families yet.";
+$text['label-firmware_no_devices']['en-us'] = "No Yealink or Grandstream devices.";
+$text['label-firmware_device']['en-us'] = "Device";
+$text['label-firmware_model']['en-us'] = "Model";
+$text['label-firmware_reported']['en-us'] = "Reported Version";
+$text['label-firmware_target']['en-us'] = "Target";
+$text['label-firmware_detail']['en-us'] = "Detail";
+$text['label-firmware_since']['en-us'] = "Since";
+$text['label-firmware_remaining']['en-us'] = "remaining";
+$text['label-firmware_none_remaining']['en-us'] = "No devices left to add.";
+$text['label-firmware_batch_count']['en-us'] = "Number of devices";
+$text['label-firmware_source_domain']['en-us'] = "domain setting";
+$text['label-firmware_source_profile']['en-us'] = "device profile";
+$text['label-firmware_source_device']['en-us'] = "device setting";
+$text['label-firmware_from_domain']['en-us'] = "domain default";
+$text['label-firmware_from_device']['en-us'] = "device";
+$text['label-firmware_from_rollout']['en-us'] = "rollout";
+
+$text['option-firmware_unset']['en-us'] = "Unset";
+$text['option-firmware_none']['en-us'] = "None";
+$text['option-firmware_follow']['en-us'] = "Domain default";
+$text['option-firmware_rollout']['en-us'] = "Rollout ({version})";
+$text['option-rollout_active']['en-us'] = "Active";
+$text['option-rollout_finished']['en-us'] = "Finished";
+$text['option-rollout_aborted']['en-us'] = "Aborted";
+
+$text['state-firmware_managed']['en-us'] = "Managed";
+$text['state-firmware_none']['en-us'] = "None";
+$text['state-firmware_unset']['en-us'] = "Unset";
+$text['state-firmware_own']['en-us'] = "Set elsewhere";
+$text['state-firmware_optout']['en-us'] = "Opted out";
+$text['state-firmware_alternate']['en-us'] = "Alternate device";
+$text['state-firmware_unsupported']['en-us'] = "Template not supported";
+$text['state-firmware_unknown_model']['en-us'] = "Not yet known (no fetch)";
+$text['state-firmware_invalid_target']['en-us'] = "Target of another family";
+$text['state-firmware_disabled']['en-us'] = "Disabled";
+$text['state-firmware_written']['en-us'] = "Written";
+$text['state-firmware_notified']['en-us'] = "Notified";
+$text['state-firmware_not_fetching']['en-us'] = "Not fetching";
+$text['state-firmware_fetched']['en-us'] = "Fetched";
+$text['state-firmware_rebooting']['en-us'] = "Rebooting";
+$text['state-firmware_rebooted']['en-us'] = "Rebooted";
+$text['state-firmware_done']['en-us'] = "Done";
+$text['state-firmware_pending_boot']['en-us'] = "Pending reboot";
+$text['state-firmware_failed']['en-us'] = "Failed";
+
+$text['button-firmware']['en-us'] = "Firmware";
+$text['button-firmware_domain']['en-us'] = "This Domain";
+$text['button-firmware_library']['en-us'] = "Library";
+$text['button-firmware_start_rollout']['en-us'] = "Start Rollout";
+$text['button-firmware_start_batch']['en-us'] = "Start Batch";
+$text['button-firmware_finish']['en-us'] = "Finish";
+$text['button-firmware_abort']['en-us'] = "Abort";
+
+$text['confirm-delete_firmware']['en-us'] = "Delete this firmware release?";
+$text['confirm-firmware_finish']['en-us'] = "Make this release the domain default for the family and end the rollout?";
+$text['confirm-firmware_abort']['en-us'] = "Abort this rollout?";
+
+$text['message-firmware_imported']['en-us'] = "Firmware imported.";
+$text['message-firmware_deleted']['en-us'] = "Firmware deleted.";
+$text['message-firmware_saved']['en-us'] = "Firmware settings saved.";
+$text['message-firmware_rollout_started']['en-us'] = "Rollout started.";
+$text['message-firmware_batch_started']['en-us'] = "Batch started for {count} device(s).";
+$text['message-firmware_rollout_aborted']['en-us'] = "Rollout aborted.";
+$text['message-firmware_rollout_finished']['en-us'] = "Rollout finished.";
+
+$text['warning-firmware_unsupported']['en-us'] = "These templates no longer print the firmware variables (an override removed them); their devices are not managed:";
+
+$text['error-firmware_file']['en-us'] = "The file is empty or could not be read.";
+$text['error-firmware_too_large']['en-us'] = "The file is larger than the upload limit; import it with the command line.";
+$text['error-firmware_zip']['en-us'] = "Unpack the vendor .zip and import the .rom or .bin inside.";
+$text['error-firmware_name']['en-us'] = "Not a Yealink ROM (name ending in FAMILY.A.B.C.rom) or a Grandstream file (MODELfw.bin).";
+$text['error-firmware_version']['en-us'] = "Enter the firmware version (e.g. 1.0.11.79).";
+$text['error-firmware_version_mismatch']['en-us'] = "The version differs from the version in the file name.";
+$text['error-firmware_models']['en-us'] = "Enter at least one valid model.";
+$text['error-firmware_exists']['en-us'] = "This firmware version is already in the library.";
+$text['error-firmware_store']['en-us'] = "The firmware could not be saved.";
+$text['error-firmware_not_found']['en-us'] = "Firmware not found.";
+$text['error-firmware_in_use']['en-us'] = "This firmware is in use by a domain default, a device, a rollout or a setting.";
+$text['error-firmware_invalid']['en-us'] = "Invalid request.";
+$text['error-firmware_rollout_active']['en-us'] = "A rollout of this family is active; finish or abort it first.";
+$text['error-firmware_batch_empty']['en-us'] = "No eligible devices for this batch.";
+$text['error-firmware_sync']['en-us'] = "The phones could not be linked now; the next run retries within two minutes.";
+$text['error-firmware_load']['en-us'] = "The firmware data could not be loaded.";
+
 ?>

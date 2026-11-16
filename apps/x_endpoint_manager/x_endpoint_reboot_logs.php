@@ -154,7 +154,15 @@
 			}
 
 			//describe the trigger
-			$trigger = $row['reboot_trigger'] == 'schedule' ? $text['option-trigger_schedule'].(!empty($row['schedule_name']) ? ": ".$row['schedule_name'] : '') : $text['option-trigger_manual'];
+			if ($row['reboot_trigger'] == 'schedule') {
+				$trigger = $text['option-trigger_schedule'].(!empty($row['schedule_name']) ? ": ".$row['schedule_name'] : '');
+			}
+			elseif ($row['reboot_trigger'] == 'firmware') {
+				$trigger = $text['option-trigger_firmware'];
+			}
+			else {
+				$trigger = $text['option-trigger_manual'];
+			}
 
 			echo "<tr class='list-row'>\n";
 			echo "	<td class='no-wrap'>".escape($row['request_date_formatted'])."</td>\n";

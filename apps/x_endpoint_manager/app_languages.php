@@ -128,6 +128,8 @@ $text['option-trigger_manual']['en-us'] = "On demand";
 
 $text['option-trigger_schedule']['en-us'] = "Schedule";
 
+$text['option-trigger_firmware']['en-us'] = "Firmware rollout";
+
 $text['option-status_active']['en-us'] = "Active";
 
 $text['option-status_completed']['en-us'] = "Completed";

@@ -304,6 +304,26 @@ class x_endpoint_manager {
 	 * @return array log uuids of the queued rows (devices that already have a queued reboot are not queued twice)
 	 */
 	public function enqueue(string $domain_uuid, array $device_uuids, string $trigger, array $requester, ?array $schedule = null, bool $enabled_only = false): array {
+		$log_uuids = [];
+		foreach ($this->enqueue_devices($domain_uuid, $device_uuids, $trigger, $requester, $schedule, $enabled_only) as $queued) {
+			if ($queued['status'] === 'queued') {
+				$log_uuids[] = $queued['log_uuid'];
+			}
+		}
+		return $log_uuids;
+	}
+
+	/**
+	 * Queue reboots like enqueue(), with the result per device. Trigger firmware is used by the firmware rollouts of
+	 * x_provision_overlay, which pass their rollout uuid so a paused or aborted rollout can cancel its queued rows.
+	 *
+	 * @param string      $trigger      manual, schedule or firmware
+	 * @param string|null $rollout_uuid firmware rollout that queued the reboot
+	 *
+	 * @return array device_uuid => ['status' => queued|already_queued, 'log_uuid' => uuid] (devices not found in the
+	 *               domain are left out)
+	 */
+	public function enqueue_devices(string $domain_uuid, array $device_uuids, string $trigger, array $requester, ?array $schedule = null, bool $enabled_only = false, ?string $rollout_uuid = null): array {
 		if (!is_uuid($domain_uuid) || empty($device_uuids)) {
 			return [];
 		}
@@ -313,7 +333,7 @@ class x_endpoint_manager {
 		}
 
 		//devices that already have a queued reboot
-		$sql = "select device_uuid from v_x_endpoint_reboot_log ";
+		$sql = "select device_uuid, x_endpoint_reboot_log_uuid from v_x_endpoint_reboot_log ";
 		$sql .= "where domain_uuid = :domain_uuid ";
 		$sql .= "and reboot_status in ('pending', 'processing') ";
 		$sql .= "and device_uuid is not null ";
@@ -323,13 +343,15 @@ class x_endpoint_manager {
 		$queued = [];
 		if (is_array($rows)) {
 			foreach ($rows as $row) {
-				$queued[$row['device_uuid']] = true;
+				$queued[$row['device_uuid']] = $row['x_endpoint_reboot_log_uuid'];
 			}
 		}
 
-		$log_uuids = [];
+		$triggers = ['schedule' => 'schedule', 'firmware' => 'firmware'];
+		$result = [];
 		foreach ($devices as $device) {
 			if (isset($queued[$device['device_uuid']])) {
+				$result[$device['device_uuid']] = ['status' => 'already_queued', 'log_uuid' => $queued[$device['device_uuid']]];
 				continue;
 			}
 			$log_uuid = uuid();
@@ -338,7 +360,8 @@ class x_endpoint_manager {
 				'domain_uuid' => $domain_uuid,
 				'x_endpoint_reboot_schedule_uuid' => $schedule['x_endpoint_reboot_schedule_uuid'] ?? null,
 				'schedule_name' => $schedule['schedule_name'] ?? null,
-				'reboot_trigger' => ($trigger === 'schedule' ? 'schedule' : 'manual'),
+				'reboot_trigger' => $triggers[$trigger] ?? 'manual',
+				'firmware_rollout_uuid' => ($trigger === 'firmware' && is_uuid((string) $rollout_uuid)) ? $rollout_uuid : null,
 				'requested_by_user_uuid' => is_uuid($requester['user_uuid'] ?? '') ? $requester['user_uuid'] : null,
 				'requested_by_username' => $requester['username'] ?? null,
 				'device_uuid' => $device['device_uuid'],
@@ -349,9 +372,9 @@ class x_endpoint_manager {
 				'reboot_status' => 'pending',
 				'reboot_detail' => null,
 			]);
-			$log_uuids[] = $log_uuid;
+			$result[$device['device_uuid']] = ['status' => 'queued', 'log_uuid' => $log_uuid];
 		}
-		return $log_uuids;
+		return $result;
 	}
 
 	/**
@@ -359,7 +382,7 @@ class x_endpoint_manager {
 	 */
 	private function log_insert(array $fields): bool {
 		$columns = ['x_endpoint_reboot_log_uuid', 'domain_uuid', 'x_endpoint_reboot_schedule_uuid', 'schedule_name', 'reboot_trigger',
-			'requested_by_user_uuid', 'requested_by_username', 'device_uuid', 'device_address', 'device_label', 'device_vendor',
+			'firmware_rollout_uuid', 'requested_by_user_uuid', 'requested_by_username', 'device_uuid', 'device_address', 'device_label', 'device_vendor',
 			'device_model', 'reboot_status', 'reboot_detail'];
 		$parameters = [];
 		foreach ($columns as $column) {
@@ -576,6 +599,36 @@ class x_endpoint_manager {
 		}
 		unset($sql, $parameters);
 
+		return $this->signal_device($row, 'reboot');
+	}
+
+	/**
+	 * Asks a device to fetch its configuration again (event_notify check_sync: check-sync on Yealink, resync on
+	 * Grandstream), with the same active call and registration checks as a reboot. Not queued and not rate
+	 * limited: the firmware rollouts of x_provision_overlay pace it themselves.
+	 *
+	 * @return array status (sent, failed, skipped_busy, skipped_unregistered, skipped_unsupported), detail
+	 */
+	public function check_sync(string $domain_uuid, string $device_uuid): array {
+		$devices = is_uuid($domain_uuid) && is_uuid($device_uuid) ? $this->get_devices($domain_uuid, [$device_uuid]) : [];
+		if (empty($devices)) {
+			return ['status' => 'failed', 'detail' => 'Device no longer exists in this domain.'];
+		}
+		$device = reset($devices);
+		return $this->signal_device(['domain_uuid' => $domain_uuid, 'device_uuid' => $device_uuid, 'device_vendor' => $device['device_vendor'] ?? ''], 'check_sync');
+	}
+
+	/**
+	 * Busy check, registration lookup and event_notify for one device.
+	 *
+	 * @param string $command reboot or check_sync
+	 */
+	private function signal_device(array $row, string $command): array {
+		$domain_uuid = $row['domain_uuid'];
+		if ($command !== 'reboot' && $command !== 'check_sync') {
+			return ['status' => 'failed', 'detail' => 'Unknown command.'];
+		}
+
 		//line users of the device
 		$users = $this->get_device_users($domain_uuid, [$row['device_uuid']])[$row['device_uuid']] ?? [];
 		if (empty($users)) {
@@ -624,12 +677,12 @@ class x_endpoint_manager {
 			return ['status' => 'skipped_unsupported', 'detail' => 'No reboot event is defined for vendor "'.$vendor.'".', 'sip_user' => $user, 'sip_profile' => $profile];
 		}
 
-		//send the reboot
+		//send the event
 		$event_socket = $this->event_socket();
 		if ($event_socket === null) {
 			return ['status' => 'failed', 'detail' => 'Event socket unavailable.', 'sip_user' => $user, 'sip_profile' => $profile];
 		}
-		$command = "lua app.lua event_notify ".$profile." reboot ".$user." ".$vendor." ".$host;
+		$command = "lua app.lua event_notify ".$profile." ".$command." ".$user." ".$vendor." ".$host;
 		$response = $event_socket->request('api '.$command);
 		$event_socket->request('api log notice [x_endpoint_manager] '.$command);
 
@@ -658,6 +711,55 @@ class x_endpoint_manager {
 		$parameters['domain_uuid'] = $domain_uuid;
 		$parameters['schedule_uuid'] = $schedule_uuid;
 		$this->database->execute($sql, $parameters);
+	}
+
+	/**
+	 * Expire the queued reboots of a firmware rollout (x_provision_overlay, when the rollout is aborted).
+	 *
+	 * @return int rows expired
+	 */
+	public function cancel_rollout_queue(string $domain_uuid, string $rollout_uuid, string $reason): int {
+		if (!is_uuid($domain_uuid) || !is_uuid($rollout_uuid)) {
+			return 0;
+		}
+		$sql = "update v_x_endpoint_reboot_log set ";
+		$sql .= "reboot_status = 'expired', ";
+		$sql .= "reboot_detail = :reason, ";
+		$sql .= "process_date = now(), update_date = now() ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "and firmware_rollout_uuid = :rollout_uuid ";
+		$sql .= "and reboot_status = 'pending' ";
+		$sql .= "returning x_endpoint_reboot_log_uuid ";
+		$parameters['reason'] = $reason;
+		$parameters['domain_uuid'] = $domain_uuid;
+		$parameters['rollout_uuid'] = $rollout_uuid;
+		$rows = $this->database->execute($sql, $parameters, 'all');
+		return is_array($rows) ? count($rows) : 0;
+	}
+
+	/**
+	 * Status and detail of log rows, by log uuid.
+	 *
+	 * @return array log_uuid => ['status' => string, 'detail' => string, 'process_date' => string|null]
+	 */
+	public function log_statuses(array $log_uuids): array {
+		$statuses = [];
+		$log_uuids = array_values(array_filter($log_uuids, 'is_uuid'));
+		foreach (array_chunk($log_uuids, 500) as $chunk) {
+			$placeholders = [];
+			$parameters = [];
+			foreach ($chunk as $i => $uuid) {
+				$placeholders[] = ':log_uuid_'.$i;
+				$parameters['log_uuid_'.$i] = $uuid;
+			}
+			$sql = "select x_endpoint_reboot_log_uuid, reboot_status, reboot_detail, process_date from v_x_endpoint_reboot_log ";
+			$sql .= "where x_endpoint_reboot_log_uuid in (".implode(', ', $placeholders).") ";
+			$rows = $this->database->select($sql, $parameters, 'all');
+			foreach (is_array($rows) ? $rows : [] as $row) {
+				$statuses[$row['x_endpoint_reboot_log_uuid']] = ['status' => (string) $row['reboot_status'], 'detail' => (string) ($row['reboot_detail'] ?? ''), 'process_date' => $row['process_date'] ?? null];
+			}
+		}
+		return $statuses;
 	}
 
 	/**

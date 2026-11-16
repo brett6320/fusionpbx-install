@@ -57,6 +57,34 @@ while IFS= read -r table; do
 	check "table $table exists" test "$(db "select to_regclass('public.$table') is not null")" = "t"
 done < <(grep -rhoE "\['db'\]\[\\\$y\]\['table'\]\['name'\] = \"v_x_[a-z0-9_]+\"" /usr/src/x-install/apps | grep -oE 'v_x_[a-z0-9_]+' | sort -u)
 
+#phone firmware: the catalog matches the pinned templates; a release is linked and served, none is a 404
+check "firmware catalog matches the templates" php /usr/src/x-install/test/firmware_catalog.php --check /var/www/fusionpbx/resources/templates/provision
+fw_cli=/var/www/fusionpbx/app/x_provision_overlay/resources/cli/firmware.php
+fw_rom=$(mktemp -d)/T46S-66.86.0.250.rom
+head -c 4096 /dev/urandom > "$fw_rom"
+chmod 0755 "$(dirname "$fw_rom")"; chmod 0644 "$fw_rom"
+check "firmware import" runuser -u www-data -- php "$fw_cli" --import "$fw_rom" --note checks
+fw_uuid=$(db "select firmware_uuid from v_x_provision_overlay_firmware where firmware_family = '66' and firmware_version = '66.86.0.250'")
+fw_device=$(cat /proc/sys/kernel/random/uuid)
+db "insert into v_devices (device_uuid, domain_uuid, device_address, device_vendor, device_template, device_enabled, device_provisioned_agent) select '$fw_device', domain_uuid, '0011223344ab', 'yealink', 'yealink/t46s', true, 'Yealink SIP-T46S 66.86.0.15 001122334ab' from v_domains where domain_name = '$test_domain'" >/dev/null
+db "insert into v_x_provision_overlay_firmware_defaults (firmware_default_uuid, domain_uuid, firmware_vendor, firmware_family, firmware_uuid, insert_date) select '$(cat /proc/sys/kernel/random/uuid)', domain_uuid, 'yealink', '66', '$fw_uuid', now() from v_domains where domain_name = '$test_domain'" >/dev/null
+check "firmware sync" runuser -u www-data -- php "$fw_cli" --sync
+check "firmware rows written" test "$(db "select count(*) from v_device_settings where device_uuid = '$fw_device' and device_setting_enabled and (device_setting_value = '66.86.0.250.rom' or device_setting_value = 'http://{\$domain_name}/provision-firmware/$fw_uuid')")" -ge 2
+fw_url="https://127.0.0.1/provision-firmware/$fw_uuid/66.86.0.250.rom"
+check "firmware served (200, same file)" cmp -s "$fw_rom" <(curl -fsk -H "Host: $test_domain" "$fw_url")
+check "firmware served as attachment, nosniff" test "$(curl -sk -o /dev/null -D - -H "Host: $test_domain" "$fw_url" | grep -ciE '^(content-type: application/octet-stream|x-content-type-options: nosniff|content-disposition: attachment)')" -ge 3
+check "firmware none is 404" test "$(curl -sk -o /dev/null -w '%{http_code}' -H "Host: $test_domain" "https://127.0.0.1/provision-firmware/none/none.rom")" = 404
+check "firmware wrong name is 404" test "$(curl -sk -o /dev/null -w '%{http_code}' -H "Host: $test_domain" "https://127.0.0.1/provision-firmware/$fw_uuid/other.rom")" = 404
+check "firmware unknown domain is 404" test "$(curl -sk -o /dev/null -w '%{http_code}' -H "Host: unknown.invalid" "$fw_url")" = 404
+check "firmware POST refused" test "$(curl -sk -o /dev/null -w '%{http_code}' -X POST -H "Host: $test_domain" "$fw_url")" = 403
+check "firmware files not reachable directly" test "$(curl -sk -o /dev/null -w '%{http_code}' -H "Host: $test_domain" "https://127.0.0.1/x-provision-firmware-files/$fw_uuid/66.86.0.250.rom")" = 404
+db "delete from v_x_provision_overlay_firmware_defaults where firmware_uuid = '$fw_uuid'" >/dev/null
+db "delete from v_devices where device_uuid = '$fw_device'" >/dev/null
+check "firmware sync after removal" runuser -u www-data -- php "$fw_cli" --sync
+check "firmware rows removed" test "$(db "select count(*) from v_device_settings where device_uuid = '$fw_device'")" = 0
+db "delete from v_x_provision_overlay_firmware_links where device_uuid = '$fw_device'; delete from v_x_provision_overlay_firmware_downloads where firmware_uuid = '$fw_uuid'; delete from v_x_provision_overlay_firmware where firmware_uuid = '$fw_uuid'" >/dev/null
+rm -rf "/var/lib/fusionpbx/provision_overlay/firmware/$fw_uuid" "$(dirname "$fw_rom")"
+
 #web login lifetime, read the way phpsessionclean reads it
 check "php-fpm session lifetime is $session_lifetime" test "$(PHP_INI_SCAN_DIR="/etc/php/$php_version/fpm/conf.d" "php$php_version" -c "/etc/php/$php_version/fpm/php.ini" -r 'echo ini_get("session.gc_maxlifetime");')" = "$session_lifetime"
 
