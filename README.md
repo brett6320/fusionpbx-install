@@ -138,6 +138,10 @@ replaced `php.ini`.
 
 ## IVR phrases (Google Text-to-Speech)
 
+How to use IVR Manager step by step (menus, options, greetings, schedules and
+holidays) is in [docs/ivr-manager.md](docs/ivr-manager.md); the sections below
+cover setup and details.
+
 In **Applications > IVR Manager**, a greeting can be set to any recording or
 phrase of the domain, or to a new phrase built there from text and pauses.
 Each text part is spoken by Google Text-to-Speech, saved as a recording, and
@@ -204,7 +208,7 @@ a phrase also deletes the recordings created for it (for users with
 ### Schedule extension
 
 An IVR schedule is a time condition with its own extension: calls sent to it
-reach the IVR menu inside the time window and the fallback outside it. Send
+reach the IVR menu while one of its rules matches and the fallback otherwise. Send
 calls to the schedule, not to the menu: in **Dialplan > Inbound Routes**,
 choose the schedule under Time Conditions. IVR Manager suggests a random,
 unused 22 digit number, as for a new IVR menu (see below; nobody needs to dial
@@ -215,6 +219,81 @@ dialplan entry of the domain already uses it, or an outbound route matches it
 (an existing schedule keeps its number). IVR Manager also lists the inbound
 routes pointing at the schedule, from Destinations and Dialplan > Inbound
 Routes.
+
+### Schedule rules
+
+A schedule has one or more rules, each with an optional label:
+
+- **One time:** from a start to an end date and time, e.g. a closure.
+- **Weekly:** chosen days, all day or from one time to another, e.g. Mon–Wed
+  08:00–17:00, Thu 07:00–15:00, and Fri–Sun all day as three rules. Times are
+  24 hour; `24:00` ends at midnight.
+- **Annual:** a date every year, or a weekday of a month (1st–4th or last,
+  e.g. the 4th Thursday of November), shifted by up to six days (the day after
+  Thanksgiving is the 4th Thursday + 1). A date can include the observed day:
+  the Friday before when it falls on a Saturday, the Monday after when on a
+  Sunday. Presets fill in US federal holidays, Christmas Eve, the day after
+  Thanksgiving and New Year's Eve.
+
+Each rule becomes condition groups of the time condition using only `date-time`,
+`wday`, `mon`, `mday` and `minute-of-day`, so FreeSWITCH works out floating
+dates every year with nothing to update. Weekly days split into one group per
+run of consecutive days, as the stock editor writes them. IVR Manager shows
+whether the schedule is active now and the next date of each annual rule,
+computed from the same conditions in the schedule's time zone.
+
+The rules are stored with the schedule (`v_x_ivr_manager_schedules`). A schedule
+with a single start and end from before rules opens as one one-time rule.
+
+#### Schedule rule limitations
+
+- **Easter-based holidays** (Good Friday, Easter Monday, ...) can't repeat on
+  their own, since FreeSWITCH has no condition for them. Add each year as a one
+  time rule.
+- **Other holidays outside the patterns** (a fixed date, or the 1st–4th or
+  last weekday of a month plus or minus up to six days) need one time rules too,
+  e.g. lunar calendar holidays or one-off "bridge" days.
+- **No window past midnight in one rule.** The end time must be after the start
+  time; for evening hours into the next morning add a second rule from 00:00
+  (e.g. Mon–Thu 17:00–24:00 and Tue–Fri 00:00–08:00).
+- **One time window per rule.** A day with two windows (a lunch closure) takes
+  two rules.
+- **Rules only add time.** The menu answers while any rule matches; a rule
+  can't exclude times (e.g. "Mon–Fri 08:00–17:00 except holidays"). Put the
+  schedule on the menu for the closed times (after hours and holidays) and make
+  the open-hours menu the fallback, as in the guide's example.
+- **Observed day** is refused on save for Feb 28, Feb 29 and Mar 1, whose
+  neighbouring days depend on the leap year. Feb 29 itself only matches in leap
+  years.
+- **Last weekday of February** is not supported, and a February weekday rule
+  can't be shifted past the 28th, since the month's length varies.
+- **An offset can't leave the month.** A weekday rule whose shifted days could
+  fall in the next or previous month is refused (e.g. last Monday of May + 1).
+- **The observed day** follows the US federal rule only (Saturday → Friday,
+  Sunday → Monday). Other observance rules, e.g. moving a Sunday holiday to the
+  next free weekday after another holiday, aren't supported.
+- **Presets are US federal holidays** plus Christmas Eve, the day after
+  Thanksgiving and New Year's Eve. Other countries' holidays are entered by
+  hand, as dates or weekday rules.
+- **Up to 40 rules** per schedule.
+- **Changes in Dialplan > Time Conditions** to a rule's times or to where it
+  sends calls (or a condition disabled in Dialplan Manager) make the schedule
+  no longer match its rules. IVR Manager then shows no rules and asks for
+  confirmation before replacing the time condition with the rules you enter.
+  Other changes there, such as the schedule's name or fallback, are shown and
+  kept.
+- **A `24:00` end** can't be edited in the stock Time Conditions editor, which
+  only offers times up to 23:59. Saving there changes it.
+- **Time zones:** weekly and annual rules are evaluated by FreeSWITCH in the
+  schedule's time zone (the domain time zone when saved), using FreeSWITCH's
+  own `timezones.conf.xml`. A zone missing there, or with outdated daylight
+  saving rules, makes FreeSWITCH use other times than IVR Manager's "active
+  now" and next dates. One time rules follow the stock editor: stored in UTC
+  when the server runs in UTC and read by FreeSWITCH in the server's time zone,
+  so they are off when the server is neither UTC nor in the domain time zone.
+  After changing the domain time zone, save the schedule again.
+- **"Active now" and the next dates** are computed by IVR Manager from the same
+  conditions, not reported by FreeSWITCH.
 
 ### Creating IVR menus
 
@@ -413,7 +492,9 @@ test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on 
 ## Known limitations
 
 - IVR schedules use upstream's time condition handling, including its time
-  zone behavior. They have not been tested with real calls.
+  zone behavior. Routing was tested with loopback calls in the test container,
+  not with calls from a carrier. Schedule rules have their own limitations,
+  listed under [Schedule rule limitations](#schedule-rule-limitations).
 - Rebooting an endpoint reboots every phone that shares its extension.
 - The provision overlay cannot stop one tenant from reading another tenant's
   templates. This is an upstream limitation.

@@ -54,6 +54,127 @@
 		exit;
 	}
 
+//a schedule rule as form fields, from a normalized rule
+	function x_ivr_manager_rule_form(array $rule) {
+		$row = $rule;
+		if (($rule['type'] ?? '') === 'once') {
+			$row['start_date'] = substr($rule['start'], 0, 10);
+			$row['start_time'] = substr($rule['start'], 11, 5);
+			$row['stop_date'] = substr($rule['stop'], 0, 10);
+			$row['stop_time'] = substr($rule['stop'], 11, 5);
+		}
+		return $row;
+	}
+
+//a posted schedule rule as rule fields
+	function x_ivr_manager_rule_post($row) {
+		if (!is_array($row)) {
+			return [];
+		}
+		$rule = [];
+		foreach (['type', 'label', 'start_date', 'start_time', 'stop_date', 'stop_time', 'all_day', 'from', 'to', 'month', 'kind', 'mday', 'observed', 'nth', 'wday', 'offset'] as $field) {
+			$rule[$field] = is_string($row[$field] ?? null) ? trim($row[$field]) : '';
+		}
+		$rule['days'] = array_values(array_filter(is_array($row['days'] ?? null) ? $row['days'] : [], 'is_string'));
+		$rule['start'] = $rule['start_date'].' '.substr($rule['start_time'], 0, 5);
+		$rule['stop'] = $rule['stop_date'].' '.substr($rule['stop_time'], 0, 5);
+		return $rule;
+	}
+
+//the form fields of a schedule rule; $i is the rule's index in the post, __i__ in the template
+	function x_ivr_manager_rule_html($i, array $row, array $text, $summary = '') {
+		$name = function($field) use ($i) { return "rules[".$i."][".$field."]"; };
+		$value = function($field) use ($row) { return escape((string)($row[$field] ?? '')); };
+		$selected = function($field, $option) use ($row) { return (string)($row[$field] ?? '') === (string)$option ? " selected='selected'" : ''; };
+		$checked = function($on) { return $on ? " checked='checked'" : ''; };
+		$type = in_array($row['type'] ?? '', ['once', 'weekly', 'annual'], true) ? $row['type'] : 'once';
+		$all_day = in_array($row['all_day'] ?? false, [true, 'true', '1', 'on'], true);
+		$html = "<div class='schedule_rule' style='border: 1px solid rgba(128,128,128,0.35); border-radius: 4px; padding: 8px 10px; margin-bottom: 8px;'>\n";
+		$html .= "	<select class='formfld rule_type' name='".$name('type')."' onchange='schedule_rule_update(this);'>\n";
+		foreach (['once', 'weekly', 'annual'] as $option) {
+			$html .= "		<option value='".$option."'".($type === $option ? " selected='selected'" : '').">".$text['option-rule_'.$option]."</option>\n";
+		}
+		$html .= "	</select>\n";
+		$html .= "	<input class='formfld' type='text' name='".$name('label')."' maxlength='64' style='width: 16em;' placeholder=\"".escape($text['label-rule_label'])."\" value=\"".$value('label')."\">\n";
+		$html .= "	<span class='rule_annual'>\n";
+		$html .= "		<select class='formfld' onchange='schedule_rule_preset(this);'>\n";
+		$html .= "			<option value=''>".$text['option-rule_preset']."</option>\n";
+		foreach (array_keys(x_ivr_manager_schedule_rules::presets()) as $preset) {
+			$html .= "			<option value=\"".escape($preset)."\">".escape($preset)."</option>\n";
+		}
+		$html .= "		</select>\n";
+		$html .= "	</span>\n";
+		$html .= "	".button::create(['type'=>'button','label'=>$text['button-remove_rule'],'icon'=>'xmark','onclick'=>'schedule_rule_remove(this);','style'=>'float: right;'])."\n";
+		if ($summary !== '') {
+			$html .= "	<span style='margin-left: 10px; opacity: 0.8;'>".escape($summary)."</span>\n";
+		}
+
+		//one time
+		$html .= "	<div class='rule_once' style='margin-top: 6px;'>\n";
+		$html .= "		".$text['label-schedule_start']." <input class='formfld' type='date' name='".$name('start_date')."' value=\"".$value('start_date')."\">\n";
+		$html .= "		<input class='formfld' type='time' name='".$name('start_time')."' value=\"".$value('start_time')."\">\n";
+		$html .= "		&nbsp; ".$text['label-schedule_end']." <input class='formfld' type='date' name='".$name('stop_date')."' value=\"".$value('stop_date')."\">\n";
+		$html .= "		<input class='formfld' type='time' name='".$name('stop_time')."' value=\"".$value('stop_time')."\">\n";
+		$html .= "	</div>\n";
+
+		//weekly
+		$days = array_map('strval', is_array($row['days'] ?? null) ? $row['days'] : []);
+		$html .= "	<div class='rule_weekly' style='margin-top: 6px;'>\n";
+		foreach ([2, 3, 4, 5, 6, 7, 1] as $day) {
+			$html .= "		<label style='margin-right: 8px;'><input type='checkbox' name='".$name('days')."[]' value='".$day."'".$checked(in_array((string)$day, $days, true))."> ".$text['label-wday_'.$day]."</label>\n";
+		}
+		$html .= "	</div>\n";
+
+		//annual
+		$kind = ($row['kind'] ?? 'date') === 'nth' ? 'nth' : 'date';
+		$html .= "	<div class='rule_annual' style='margin-top: 6px;'>\n";
+		$html .= "		<select class='formfld rule_kind' name='".$name('kind')."' onchange='schedule_rule_update(this);'>\n";
+		$html .= "			<option value='date'".($kind === 'date' ? " selected='selected'" : '').">".$text['option-rule_kind_date']."</option>\n";
+		$html .= "			<option value='nth'".($kind === 'nth' ? " selected='selected'" : '').">".$text['option-rule_kind_nth']."</option>\n";
+		$html .= "		</select>\n";
+		$html .= "		<span class='rule_kind_nth'>\n";
+		$html .= "			<select class='formfld' name='".$name('nth')."'>\n";
+		foreach (['1', '2', '3', '4', 'last'] as $option) {
+			$html .= "				<option value='".$option."'".$selected('nth', $option).">".$text['option-nth_'.$option]."</option>\n";
+		}
+		$html .= "			</select>\n";
+		$html .= "			<select class='formfld' name='".$name('wday')."'>\n";
+		foreach ([2, 3, 4, 5, 6, 7, 1] as $day) {
+			$html .= "				<option value='".$day."'".$selected('wday', $day).">".$text['label-wday_'.$day]."</option>\n";
+		}
+		$html .= "			</select>\n";
+		$html .= "			".$text['label-rule_of']."\n";
+		$html .= "		</span>\n";
+		$html .= "		<select class='formfld' name='".$name('month')."'>\n";
+		for ($month = 1; $month <= 12; $month++) {
+			$html .= "			<option value='".$month."'".$selected('month', $month).">".$text['label-month_'.$month]."</option>\n";
+		}
+		$html .= "		</select>\n";
+		$html .= "		<span class='rule_kind_date'>\n";
+		$html .= "			<input class='formfld' type='number' name='".$name('mday')."' min='1' max='31' style='width: 4.5em;' value=\"".$value('mday')."\">\n";
+		$html .= "			<label style='margin-left: 8px;'><input type='checkbox' name='".$name('observed')."' value='true'".$checked(in_array($row['observed'] ?? false, [true, 'true', '1', 'on'], true))."> ".$text['label-rule_observed']."</label>\n";
+		$html .= "		</span>\n";
+		$html .= "		<span class='rule_kind_nth'>\n";
+		$html .= "			<select class='formfld' name='".$name('offset')."'>\n";
+		$offset = (string)($row['offset'] ?? '0');
+		for ($days_offset = -6; $days_offset <= 6; $days_offset++) {
+			$label = $days_offset == 0 ? $text['option-offset_0'] : sprintf($text[$days_offset > 0 ? 'option-offset_after' : 'option-offset_before'], abs($days_offset));
+			$html .= "				<option value='".$days_offset."'".((int)$offset === $days_offset && preg_match('/^[+-]?[0-6]$/', $offset) ? " selected='selected'" : '').">".escape($label)."</option>\n";
+		}
+		$html .= "			</select>\n";
+		$html .= "		</span>\n";
+		$html .= "	</div>\n";
+
+		//time window of weekly and annual rules
+		$html .= "	<div class='rule_window' style='margin-top: 6px;'>\n";
+		$html .= "		<label style='margin-right: 10px;'><input type='checkbox' class='rule_all_day' name='".$name('all_day')."' value='true'".$checked($all_day)." onchange='schedule_rule_update(this);'> ".$text['label-rule_all_day']."</label>\n";
+		$html .= "		<span class='rule_hours'>".$text['label-rule_from']." <input class='formfld' type='text' name='".$name('from')."' maxlength='5' size='5' pattern='([01][0-9]|2[0-3]):[0-5][0-9]' placeholder='08:00' value=\"".$value('from')."\">\n";
+		$html .= "		".$text['label-rule_to']." <input class='formfld' type='text' name='".$name('to')."' maxlength='5' size='5' pattern='([01][0-9]|2[0-3]):[0-5][0-9]|24:00' placeholder='17:00' value=\"".$value('to')."\"></span>\n";
+		$html .= "	</div>\n";
+		$html .= "</div>\n";
+		return $html;
+	}
+
 //initialize the ivr manager
 	$manager = new x_ivr_manager(['database' => $database, 'settings' => $settings, 'domain_uuid' => $domain_uuid, 'domain_name' => $domain_name]);
 
@@ -257,17 +378,15 @@
 				}
 				$schedule_form['dialplan_name'] = $_POST['dialplan_name'] ?? '';
 				$schedule_form['dialplan_number'] = $_POST['dialplan_number'] ?? '';
-				$schedule_form['start_date'] = $_POST['start_date'] ?? '';
-				$schedule_form['start_time'] = substr($_POST['start_time'] ?? '', 0, 5);
-				$schedule_form['stop_date'] = $_POST['stop_date'] ?? '';
-				$schedule_form['stop_time'] = substr($_POST['stop_time'] ?? '', 0, 5);
+				$schedule_form['rules'] = [];
+				foreach (is_array($_POST['rules'] ?? null) ? $_POST['rules'] : [] as $row) {
+					$schedule_form['rules'][] = x_ivr_manager_rule_post($row);
+				}
 				$schedule_form['anti_action'] = $_POST['anti_action'] ?? '';
 				$schedule_form['dialplan_enabled'] = ($_POST['dialplan_enabled'] ?? 'true') === 'false' ? 'false' : 'true';
 				$schedule_form['confirm_replace'] = ($_POST['confirm_replace'] ?? '') === 'true' ? 'true' : '';
 
 				$schedule_array = $schedule_form;
-				$schedule_array['start'] = $schedule_form['start_date'].' '.$schedule_form['start_time'];
-				$schedule_array['stop'] = $schedule_form['stop_date'].' '.$schedule_form['stop_time'];
 				if ($manager->save_schedule($ivr_menu, $schedule_array) !== false) {
 					message::add($text['message-schedule_saved']);
 					header('Location: '.$redirect);
@@ -277,6 +396,9 @@
 				$error_key = is_string($manager->message) ? $manager->message : '';
 				if ($error_key === 'message-schedule_number_in_use' || $error_key === 'message-schedule_number_routable') {
 					message::add(sprintf($text[$error_key], $schedule_form['dialplan_number'], $manager->number_used_by), 'negative');
+				}
+				else if (!empty($manager->rule_number) && isset($text[$error_key])) {
+					message::add(sprintf($text['message-schedule_rule_error'], $manager->rule_number, $text[$error_key]), 'negative');
 				}
 				else {
 					message::add($text[$error_key] ?? $text['message-failed'], 'negative');
@@ -389,29 +511,51 @@
 	$time_zone = $manager->time_zone();
 	if (permission_exists('x_ivr_manager_schedule')) {
 		$schedule = $manager->get_schedule($ivr_menu);
+		if ($schedule === false) {
+			message::add($text['message-schedule_lookup_failed'], 'negative');
+		}
 		if (!isset($schedule_form)) {
 			$schedule_form['dialplan_name'] = $schedule['dialplan_name'] ?? $ivr_menu['ivr_menu_name'].' Schedule';
 			$schedule_form['dialplan_number'] = $schedule['dialplan_number'] ?? $manager->suggest_schedule_number();
-			$schedule_form['start_date'] = !empty($schedule['start']) ? substr($schedule['start'], 0, 10) : '';
-			$schedule_form['start_time'] = !empty($schedule['start']) ? substr($schedule['start'], 11, 5) : '';
-			$schedule_form['stop_date'] = !empty($schedule['stop']) ? substr($schedule['stop'], 0, 10) : '';
-			$schedule_form['stop_time'] = !empty($schedule['stop']) ? substr($schedule['stop'], 11, 5) : '';
+			$schedule_form['rules'] = array_map('x_ivr_manager_rule_form', $schedule['rules'] ?? []);
+			if (empty($schedule_form['rules']) && empty($schedule)) {
+				$schedule_form['rules'][] = ['type' => 'once'];
+			}
 			$schedule_form['anti_action'] = $schedule['anti_action'] ?? '';
 			$schedule_form['dialplan_enabled'] = $schedule['dialplan_enabled'] ?? 'true';
 		}
 
-		//schedule status in the domain time zone
+		//schedule status in the domain time zone, and per saved rule when it applies next
 		$schedule_status = '';
-		if (!empty($schedule['start']) && !empty($schedule['stop'])) {
-			$now = (new DateTime('now', new DateTimeZone($time_zone)))->format('Y-m-d H:i');
-			if ($now < $schedule['start']) {
-				$schedule_status = $text['label-schedule_pending'];
+		$rule_summaries = [];
+		if (!empty($schedule['rules'])) {
+			//in the time zone the time condition was saved with, as the switch evaluates it
+			$now = new DateTime('now', new DateTimeZone($schedule['dialplan_time_zone']));
+			$now_text = $now->format('Y-m-d H:i');
+			$ended = true;
+			foreach ($schedule['rules'] as $i => $rule) {
+				if ($rule['type'] === 'once') {
+					$rule_summaries[$i] = $now_text < $rule['start'] ? $text['label-schedule_pending'] : ($now_text >= $rule['stop'] ? $text['label-schedule_expired'] : $text['label-schedule_active']);
+					$ended = $ended && $now_text >= $rule['stop'];
+				}
+				else {
+					$ended = false;
+					if ($rule['type'] === 'annual') {
+						$next = x_ivr_manager_schedule_rules::next_date($rule, $now);
+						if ($next !== null) {
+							$rule_summaries[$i] = sprintf($text['label-rule_next'], DateTime::createFromFormat('!Y-m-d', $next)->format('D, M j, Y'));
+						}
+					}
+				}
 			}
-			else if ($now >= $schedule['stop']) {
-				$schedule_status = $text['label-schedule_expired'];
+			if (($schedule['dialplan_enabled'] ?? 'true') === 'false') {
+				$schedule_status = $text['label-schedule_disabled'];
+			}
+			else if (x_ivr_manager_schedule_rules::active($schedule['rules'], $now)) {
+				$schedule_status = $text['label-schedule_active'];
 			}
 			else {
-				$schedule_status = $text['label-schedule_active'];
+				$schedule_status = $ended ? $text['label-schedule_expired'] : $text['label-schedule_inactive'];
 			}
 		}
 
@@ -885,18 +1029,23 @@
 		echo "</td>\n";
 		echo "</tr>\n";
 		echo "<tr>\n";
-		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-schedule_start']."</td>\n";
+		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-schedule_rules']."</td>\n";
 		echo "<td class='vtable' align='left'>\n";
-		echo "	<input class='formfld' type='date' name='start_date' value=\"".escape($schedule_form['start_date'])."\" required='required'>\n";
-		echo "	<input class='formfld' type='time' name='start_time' value=\"".escape($schedule_form['start_time'])."\" required='required'>\n";
-		echo "</td>\n";
-		echo "</tr>\n";
-		echo "<tr>\n";
-		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-schedule_end']."</td>\n";
-		echo "<td class='vtable' align='left'>\n";
-		echo "	<input class='formfld' type='date' name='stop_date' value=\"".escape($schedule_form['stop_date'])."\" required='required'>\n";
-		echo "	<input class='formfld' type='time' name='stop_time' value=\"".escape($schedule_form['stop_time'])."\" required='required'>\n";
-		echo "	<br />".$text['description-schedule_time_zone']." (".escape($time_zone).")\n";
+		echo "	<div id='schedule_rules'>\n";
+		$rule_index = 0;
+		foreach ($schedule_form['rules'] as $i => $row) {
+			//the summary belongs to the saved rule, not to posted values shown again
+			echo x_ivr_manager_rule_html($rule_index++, $row, $text, isset($_POST['rules']) ? '' : ($rule_summaries[$i] ?? ''));
+		}
+		echo "	</div>\n";
+		echo "	<template id='schedule_rule_template'>".x_ivr_manager_rule_html('__i__', ['type' => 'weekly', 'all_day' => false], $text)."</template>\n";
+		echo "	".button::create(['type'=>'button','label'=>$text['button-add_rule'],'icon'=>$settings->get('theme', 'button_icon_add'),'onclick'=>'schedule_rule_add();'])."\n";
+		//the schedule's own time zone; it differs from the domain's after the domain time zone changed
+		$schedule_time_zone = !empty($schedule['dialplan_time_zone']) ? $schedule['dialplan_time_zone'] : $time_zone;
+		echo "	<br />".sprintf($text['description-schedule_rules'], escape($schedule_time_zone))."\n";
+		if ($schedule_time_zone !== $time_zone) {
+			echo "	<br /><b>".sprintf($text['message-schedule_time_zone_changed'], escape($schedule_time_zone), escape($time_zone))."</b>\n";
+		}
 		echo "</td>\n";
 		echo "</tr>\n";
 		echo "<tr>\n";
@@ -925,6 +1074,60 @@
 
 		//remove the schedule after a confirmation, form.submit() skips the required field validation
 		echo "<script>\n";
+		echo "	const schedule_rule_presets = ".json_encode(x_ivr_manager_schedule_rules::presets(), JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP).";\n";
+		echo "	let schedule_rule_next = ".(int)$rule_index.";\n";
+		echo "	function schedule_rule_update(element) {\n";
+		echo "		const box = element.closest('.schedule_rule');\n";
+		echo "		const type = box.querySelector('.rule_type').value;\n";
+		echo "		const kind = box.querySelector('.rule_kind').value;\n";
+		echo "		const all_day = box.querySelector('.rule_all_day').checked;\n";
+		echo "		box.querySelectorAll('.rule_once').forEach(function(e) { e.style.display = type === 'once' ? '' : 'none'; });\n";
+		echo "		box.querySelectorAll('.rule_weekly').forEach(function(e) { e.style.display = type === 'weekly' ? '' : 'none'; });\n";
+		echo "		box.querySelectorAll('.rule_annual').forEach(function(e) { e.style.display = type === 'annual' ? '' : 'none'; });\n";
+		echo "		box.querySelectorAll('.rule_kind_date').forEach(function(e) { e.style.display = kind === 'date' ? '' : 'none'; });\n";
+		echo "		box.querySelectorAll('.rule_kind_nth').forEach(function(e) { e.style.display = kind === 'nth' ? '' : 'none'; });\n";
+		echo "		box.querySelectorAll('.rule_window').forEach(function(e) { e.style.display = type === 'once' ? 'none' : ''; });\n";
+		echo "		box.querySelectorAll('.rule_hours').forEach(function(e) { e.style.display = all_day ? 'none' : ''; });\n";
+		//hidden fields are disabled: the browser would refuse to save over a hidden invalid field
+		echo "		box.querySelectorAll('input, select').forEach(function(e) {\n";
+		echo "			let hidden = false;\n";
+		echo "			for (let p = e.parentElement; p && p !== box; p = p.parentElement) { if (p.style.display === 'none') { hidden = true; } }\n";
+		echo "			e.disabled = hidden;\n";
+		echo "		});\n";
+		echo "	}\n";
+		echo "	function schedule_rule_add() {\n";
+		echo "		const template = document.getElementById('schedule_rule_template');\n";
+		echo "		const holder = document.createElement('div');\n";
+		echo "		holder.innerHTML = template.innerHTML.split('__i__').join(String(schedule_rule_next++));\n";
+		echo "		const box = holder.firstElementChild;\n";
+		echo "		document.getElementById('schedule_rules').appendChild(box);\n";
+		echo "		schedule_rule_update(box.querySelector('.rule_type'));\n";
+		echo "	}\n";
+		echo "	function schedule_rule_remove(button) {\n";
+		echo "		button.closest('.schedule_rule').remove();\n";
+		echo "	}\n";
+		echo "	function schedule_rule_preset(select) {\n";
+		echo "		const preset = schedule_rule_presets[select.value];\n";
+		echo "		if (!preset) { return; }\n";
+		echo "		const box = select.closest('.schedule_rule');\n";
+		echo "		const field = function(name) { return box.querySelector('[name$=\"[' + name + ']\"]'); };\n";
+		echo "		if (field('label').value === '') { field('label').value = select.value; }\n";
+		echo "		field('month').value = String(preset.month);\n";
+		echo "		field('kind').value = preset.kind;\n";
+		echo "		if (preset.kind === 'date') {\n";
+		echo "			field('mday').value = String(preset.mday);\n";
+		echo "			field('observed').checked = !!preset.observed;\n";
+		echo "		}\n";
+		echo "		else {\n";
+		echo "			field('nth').value = preset.nth;\n";
+		echo "			field('wday').value = String(preset.wday);\n";
+		echo "			field('offset').value = String(preset.offset);\n";
+		echo "		}\n";
+		echo "		field('all_day').checked = true;\n";
+		echo "		select.value = '';\n";
+		echo "		schedule_rule_update(select);\n";
+		echo "	}\n";
+		echo "	document.querySelectorAll('#schedule_rules .rule_type').forEach(function(e) { schedule_rule_update(e); });\n";
 		echo "	function schedule_delete() {\n";
 		echo "		if (!confirm(".json_encode($text['confirm-delete_schedule'], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP).")) { return; }\n";
 		echo "		document.getElementById('schedule_action').value = 'schedule_delete';\n";
