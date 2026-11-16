@@ -22,7 +22,7 @@
 		global    /var/lib/fusionpbx/provision_overlay/global/<vendor>/<model>/<file>
 		domain    /var/lib/fusionpbx/provision_overlay/domains/<domain_uuid>/<vendor>/<model>/<file>
 		assets    /var/lib/fusionpbx/provision_overlay/assets/<domain_uuid>/<file>
-		          (wp-* names are phone wallpapers, recorded in .wallpapers.json; see provision_wallpapers.php)
+		          (wp-<group>-<hash>.<ext> names are phone wallpapers, recorded in .wallpapers.json; see provision_wallpapers.php)
 		merged    /var/lib/fusionpbx/provision_overlay/merged/<build-id>/   (generated)
 		link      /usr/share/fusionpbx/templates/provision -> .../merged/current
 
@@ -73,8 +73,10 @@ class provision_overlay {
 	//are linked per device by the wallpapers page instead (provision_wallpapers.php)
 	const vendor_setting_patterns = [];
 
-	//asset names starting with this prefix are reserved for wallpapers
+	//new uploads named wp-* are stored as wp_*; names of this form are wallpapers (provision_wallpapers.php),
+	//never ordinary assets. Assets uploaded before wallpapers existed may still start with wp-.
 	const wallpaper_prefix = 'wp-';
+	const wallpaper_file_pattern = '/^wp-([0-9]{3,4}x[0-9]{3,4})-([0-9a-f]{8})\.(jpg|png)$/';
 
 	/**
 	 * @var database|null
@@ -214,7 +216,7 @@ class provision_overlay {
 
 	public static function valid_asset_name(string $name): bool {
 		return preg_match(self::asset_name_pattern, $name) === 1 && strpos($name, '..') === false
-			&& strpos($name, self::wallpaper_prefix) !== 0;
+			&& preg_match(self::wallpaper_file_pattern, $name) !== 1;
 	}
 
 	public static function valid_vendor_setting(string $subcategory): bool {
@@ -231,9 +233,10 @@ class provision_overlay {
 	//-------------------------------------------------------------------------
 
 	/**
-	 * Takes the exclusive overlay lock. Re-entrant within the process.
+	 * Takes the exclusive overlay lock, waiting up to $timeout seconds (default lock_timeout). Re-entrant
+	 * within the process.
 	 */
-	public function lock(): bool {
+	public function lock(int $timeout = self::lock_timeout): bool {
 		if ($this->lock_depth > 0) {
 			$this->lock_depth++;
 			return true;
@@ -245,7 +248,7 @@ class provision_overlay {
 		if ($handle === false) {
 			return false;
 		}
-		$deadline = time() + self::lock_timeout;
+		$deadline = time() + $timeout;
 		while (!flock($handle, LOCK_EX | LOCK_NB)) {
 			if (time() >= $deadline) {
 				fclose($handle);

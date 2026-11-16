@@ -56,7 +56,10 @@
 	require_once dirname(__DIR__) . "/classes/provision_overlay.php";
 	require_once dirname(__DIR__) . "/classes/provision_wallpapers.php";
 	if ($command === '--sync' && $domain_uuid === '' && file_exists(provision_wallpapers::request_path())) {
-		@unlink(provision_wallpapers::request_path());
+		if (!@unlink(provision_wallpapers::request_path()) && file_exists(provision_wallpapers::request_path())) {
+			fwrite(STDERR, "x_provision_overlay: wallpapers: cannot remove ".provision_wallpapers::request_path()."; remove it by hand (x-provision-wallpapers.path restarts this run while it exists)\n");
+			exit(1);
+		}
 	}
 
 //the framework and the database
@@ -84,7 +87,13 @@
 				$results = [$domain_uuid => $wallpapers->sync_domain($domain_uuid)];
 			}
 			else {
-				$results = $wallpapers->sync_all();
+				$run = $wallpapers->sync_all();
+				if (!$run['success']) {
+					fwrite(STDERR, "x_provision_overlay: wallpapers: ".$run['error']."\n");
+					//another change holding the lock is not a failure: the next timer run retries
+					exit(str_contains($run['error'], 'lock') ? 0 : 1);
+				}
+				$results = $run['results'];
 			}
 			$failed = 0;
 			$domains = $overlay->get_domains() ?? [];
@@ -100,14 +109,15 @@
 					echo "x_provision_overlay: wallpapers: ".$name.": inserted ".$result['inserted'].", updated ".$result['updated'].", deleted ".$result['deleted'].", links dropped ".$result['dropped']."\n";
 				}
 			}
-			exit($failed > 0 ? 1 : 0);
+			//one domain failing is logged and retried by the next run; the unit fails only when every domain failed
+			exit(($failed > 0 && $failed === count($results)) ? 1 : 0);
 
 		case '--cleanup':
 			$result = $wallpapers->cleanup();
 			foreach ($result['errors'] as $error) {
 				fwrite(STDERR, "x_provision_overlay: wallpapers: error: ".$error."\n");
 			}
-			echo "x_provision_overlay: wallpapers: cleanup removed ".$result['files']." file(s), ".$result['domains']." deleted domain asset dir(s), ".$result['links']." link(s)\n";
+			echo "x_provision_overlay: wallpapers: cleanup removed ".$result['files']." file(s) (".$result['kept']." kept, still referenced), ".$result['temp']." temp file(s), ".$result['domains']." deleted domain asset dir(s), ".$result['links']." link(s)\n";
 			exit(empty($result['errors']) ? 0 : 1);
 	}
 

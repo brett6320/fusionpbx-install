@@ -24,6 +24,13 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+SystemCallArchitectures=native
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+CapabilityBoundingSet=
+UMask=0027
 ;the sync writes device settings (database, over sockets), the lock, the template check cache and removes
 ;the request file of the wallpapers page, all under the overlay state root
 ReadWritePaths=/var/lib/fusionpbx/provision_overlay -/var/cache/fusionpbx

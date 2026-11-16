@@ -34,6 +34,9 @@ class provision_wallpapers {
 
 	//limits
 	const grace_seconds = 86400;
+	const domain_grace_seconds = 604800;
+	const temp_grace_seconds = 3600;
+	const sync_all_lock_timeout = 5;
 	const jpeg_quality_start = 90;
 	const jpeg_quality_min = 40;
 	const jpeg_quality_step = 5;
@@ -45,7 +48,8 @@ class provision_wallpapers {
 	const global_scope = 'global';
 	const request_file = '.wallpapers-sync.request';
 	const template_cache_file = '.wallpapers-templates.json';
-	const file_pattern = '/^wp-([0-9]{3,4}x[0-9]{3,4})-([0-9a-f]{8})\.(jpg|png)$/';
+	const missing_domains_file = '.wallpapers-missing-domains.json';
+	const file_pattern = provision_overlay::wallpaper_file_pattern;
 
 	//device settings written by the sync
 	const setting_category = 'provision';
@@ -239,27 +243,54 @@ class provision_wallpapers {
 	}
 
 	/**
-	 * Decoded .wallpapers.json of a scope: ['groups' => [group => image], 'retired' => [file => time]].
+	 * Decoded .wallpapers.json of a scope: ['groups' => [group => image], 'retired' => [file => time],
+	 * 'unrecorded' => [file => first seen]]. Empty when the scope has no metadata file; null when the file
+	 * exists but cannot be used (symlink, unreadable, not valid json), so callers can stop instead of
+	 * treating every image as gone.
 	 */
-	public static function read_meta(string $scope): array {
-		$meta = ['groups' => [], 'retired' => []];
+	public static function read_meta(string $scope): ?array {
+		$meta = ['groups' => [], 'retired' => [], 'unrecorded' => []];
 		$dir = self::scope_dir($scope);
-		if ($dir === null || !is_file($dir.'/'.self::meta_file) || is_link($dir.'/'.self::meta_file)) {
+		if ($dir === null) {
+			return null;
+		}
+		$file = $dir.'/'.self::meta_file;
+		if (is_link($file)) {
+			return null;
+		}
+		if (!file_exists($file)) {
 			return $meta;
 		}
-		$data = json_decode((string) file_get_contents($dir.'/'.self::meta_file), true);
+		$content = is_file($file) ? @file_get_contents($file) : false;
+		if (!is_string($content)) {
+			return null;
+		}
+		$data = json_decode($content, true);
 		if (!is_array($data)) {
-			return $meta;
+			return null;
 		}
 		foreach (($data['groups'] ?? []) as $group => $image) {
 			if (is_string($group) && isset(self::groups[$group]) && is_array($image) && is_array($image['files'] ?? null)) {
 				$meta['groups'][$group] = $image;
 			}
 		}
-		foreach (($data['retired'] ?? []) as $name => $time) {
-			if (is_string($name) && self::valid_file_name($name)) {
-				$meta['retired'][$name] = (string) $time;
+		foreach (['retired', 'unrecorded'] as $list) {
+			foreach (($data[$list] ?? []) as $name => $time) {
+				if (is_string($name) && self::valid_file_name($name)) {
+					$meta[$list][$name] = (string) $time;
+				}
 			}
+		}
+		return $meta;
+	}
+
+	/**
+	 * Metadata that must be usable: throws when read_meta() returns null.
+	 */
+	private static function require_meta(string $scope): array {
+		$meta = self::read_meta($scope);
+		if ($meta === null) {
+			throw new RuntimeException('wallpaper metadata of '.$scope.' cannot be read ('.self::scope_dir($scope).'/'.self::meta_file.')');
 		}
 		return $meta;
 	}
@@ -271,6 +302,8 @@ class provision_wallpapers {
 		}
 		ksort($meta['groups'], SORT_STRING);
 		ksort($meta['retired'], SORT_STRING);
+		$meta['unrecorded'] = $meta['unrecorded'] ?? [];
+		ksort($meta['unrecorded'], SORT_STRING);
 		$json = json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 		return $json !== false && self::write_atomic($dir.'/'.self::meta_file, $json."\n");
 	}
@@ -350,12 +383,12 @@ class provision_wallpapers {
 	 * @return array|null ['scope' => 'domain'|'global', 'files' => [ext => name], 'image' => meta row]
 	 */
 	public static function effective_image(string $domain_uuid, string $group, ?array $domain_meta = null, ?array $global_meta = null): ?array {
-		$domain_meta = $domain_meta ?? self::read_meta($domain_uuid);
+		$domain_meta = $domain_meta ?? self::read_meta($domain_uuid) ?? ['groups' => []];
 		$image = self::stored_image($domain_uuid, $domain_meta, $group);
 		if ($image !== null) {
 			return ['scope' => 'domain'] + $image;
 		}
-		$global_meta = $global_meta ?? self::read_meta(self::global_scope);
+		$global_meta = $global_meta ?? self::read_meta(self::global_scope) ?? ['groups' => []];
 		$image = self::stored_image(self::global_scope, $global_meta, $group);
 		if ($image !== null) {
 			return ['scope' => 'global'] + $image;
@@ -375,6 +408,9 @@ class provision_wallpapers {
 		}
 		foreach ([$domain_uuid, self::global_scope] as $scope) {
 			$meta = self::read_meta($scope);
+			if ($meta === null) {
+				continue;
+			}
 			$recorded = isset($meta['retired'][$name]);
 			foreach ($meta['groups'] as $image) {
 				foreach ($image['files'] as $file) {
@@ -422,13 +458,16 @@ class provision_wallpapers {
 	/**
 	 * Estimated memory to decode a source and fit it (GD keeps 4 bytes per pixel, plus working copies).
 	 */
-	public static function memory_needed(int $width, int $height): int {
+	public static function memory_needed(int $width, int $height, bool $rotated = false): int {
 		$target = 1280 * 800 * 4;
-		return (int) ($width * $height * 4 * 1.25) + $target * 4 + 8388608;
+		//an exif orientation other than 1 may need a second, rotated copy of the source
+		$copies = $rotated ? 2 : 1;
+		return (int) ($width * $height * 4 * 1.25 * $copies) + $target * 4 + 8388608;
 	}
 
 	/**
-	 * Largest square source (pixels per side) the current memory_limit allows, or 0 when unlimited.
+	 * Largest square source (pixels per side) the current memory_limit allows, or 0 when unlimited. Assumes
+	 * the worst case (an exif orientation that needs a rotated copy).
 	 */
 	public static function max_source_side(): int {
 		$limit = self::memory_limit();
@@ -439,7 +478,7 @@ class provision_wallpapers {
 		if ($available <= 0) {
 			return 1;
 		}
-		return min(provision_overlay::asset_max_dimension, (int) floor(sqrt($available / 5)));
+		return min(provision_overlay::asset_max_dimension, (int) floor(sqrt($available / 10)));
 	}
 
 	/**
@@ -646,8 +685,10 @@ class provision_wallpapers {
 			$result['error'] = 'error-asset_dimensions';
 			return $result;
 		}
+		//the orientation is read before decoding: a rotation needs a second copy of the source
+		$orientation = ($mime === 'image/jpeg') ? self::exif_orientation($path) : 1;
 		$limit = self::memory_limit();
-		if ($limit > 0 && memory_get_usage() + self::memory_needed($source_width, $source_height) > $limit) {
+		if ($limit > 0 && memory_get_usage() + self::memory_needed($source_width, $source_height, $orientation !== 1) > $limit) {
 			$result['error'] = 'error-wallpaper_memory';
 			return $result;
 		}
@@ -658,7 +699,6 @@ class provision_wallpapers {
 			$result['error'] = 'error-asset_process';
 			return $result;
 		}
-		$orientation = ($mime === 'image/jpeg') ? self::exif_orientation($path) : 1;
 		$oriented = self::orient($source, $orientation);
 		if ($oriented !== $source) {
 			imagedestroy($source);
@@ -698,6 +738,12 @@ class provision_wallpapers {
 				$result['error'] = 'error-asset_store';
 				return $result;
 			}
+			//never replace metadata that cannot be read: it would lose the other groups' images
+			$meta = self::read_meta($scope);
+			if ($meta === null) {
+				$result['error'] = 'error-wallpaper_meta';
+				return $result;
+			}
 
 			//files first, then the metadata, then the settings
 			$files = [];
@@ -715,7 +761,6 @@ class provision_wallpapers {
 					$files[$ext]['colors'] = $encoded['colors'];
 				}
 			}
-			$meta = self::read_meta($scope);
 			$new_names = array_column($files, 'name');
 			$now = gmdate('c');
 			foreach (($meta['groups'][$group]['files'] ?? []) as $file) {
@@ -725,7 +770,7 @@ class provision_wallpapers {
 				}
 			}
 			foreach ($new_names as $name) {
-				unset($meta['retired'][$name]);
+				unset($meta['retired'][$name], $meta['unrecorded'][$name]);
 			}
 			$meta['groups'][$group] = [
 				'files' => $files,
@@ -770,6 +815,10 @@ class provision_wallpapers {
 		}
 		try {
 			$meta = self::read_meta($scope);
+			if ($meta === null) {
+				$result['error'] = 'error-wallpaper_meta';
+				return $result;
+			}
 			if (!isset($meta['groups'][$group])) {
 				$result['error'] = 'error-not_found';
 				return $result;
@@ -839,6 +888,8 @@ class provision_wallpapers {
 	 */
 	public static function template_support(string $domain_name): array {
 		[$base, $id] = self::template_base();
+		//a changed catalog invalidates the cache as well
+		$id .= '-'.substr(hash('sha256', (string) json_encode(self::catalog)), 0, 12);
 		$scope = '';
 		if ($domain_name !== '' && preg_match(provision_overlay::domain_name_pattern, $domain_name) === 1 && is_dir($base.'/'.$domain_name)) {
 			$scope = $domain_name;
@@ -944,11 +995,12 @@ class provision_wallpapers {
 		}
 		$templates = array_keys(self::catalog);
 		$variables = self::all_variables();
-		$plan = ['inserts' => [], 'updates' => [], 'deletes' => [], 'drop_links' => []];
+		$plan = ['inserts' => [], 'updates' => [], 'deletes' => [], 'drop_links' => [], 'move_links' => []];
 
-		//images per group: domain, else system default
-		$domain_meta = self::read_meta($domain_uuid);
-		$global_meta = self::read_meta(self::global_scope);
+		//images per group: domain, else system default; unreadable metadata stops the analysis, so a damaged
+		//file never looks like "no image" and removes the phones' rows
+		$domain_meta = self::require_meta($domain_uuid);
+		$global_meta = self::require_meta(self::global_scope);
 		$images = [];
 		foreach (array_keys(self::groups) as $group) {
 			$images[$group] = self::effective_image($domain_uuid, $group, $domain_meta, $global_meta);
@@ -986,14 +1038,35 @@ class provision_wallpapers {
 		}
 		unset($sql, $parameters);
 
-		//links recorded by earlier syncs
-		$sql = "select wallpaper_link_uuid, device_uuid, device_setting_uuid, wallpaper_subcategory, wallpaper_value ";
+		//links recorded by earlier syncs for this domain, or for a device that is in this domain now
+		$sql = "select wallpaper_link_uuid, domain_uuid, device_uuid, device_setting_uuid, wallpaper_subcategory, wallpaper_value ";
 		$sql .= "from v_x_provision_overlay_wallpaper_links ";
 		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "or device_uuid in (select device_uuid from v_devices where domain_uuid = :domain_uuid) ";
 		$sql .= "order by insert_date asc, wallpaper_link_uuid asc ";
 		$parameters['domain_uuid'] = $domain_uuid;
 		$links = $this->query($sql, $parameters);
 		unset($sql, $parameters);
+
+		//rows of links the query above does not cover: the device moved to another domain, or the variable
+		//left the catalog; they are ours while they hold the value written, and are removed
+		$orphans = [];
+		$missing = [];
+		foreach ($links as $link) {
+			if (!isset($settings[$link['device_setting_uuid']])) {
+				$missing[$link['device_setting_uuid']] = true;
+			}
+		}
+		if (!empty($missing)) {
+			[$in_settings, $parameters] = self::in_list('s', array_keys($missing));
+			$sql = "select device_setting_uuid, device_uuid, device_setting_subcategory, device_setting_value, device_setting_enabled ";
+			$sql .= "from v_device_settings ";
+			$sql .= "where device_setting_uuid in (".$in_settings.") ";
+			foreach ($this->query($sql, $parameters) as $row) {
+				$orphans[$row['device_setting_uuid']] = $row;
+			}
+			unset($sql, $parameters, $in_settings);
+		}
 
 		//enabled, non-empty domain settings (settings.php ignores empty domain values)
 		[$in_variables, $parameters] = self::in_list('v', $variables);
@@ -1030,6 +1103,20 @@ class provision_wallpapers {
 		//a link holds while its row exists with the value written; otherwise the row is the admin's (or gone)
 		$managed = [];
 		foreach ($links as $link) {
+			$orphan = $orphans[$link['device_setting_uuid']] ?? null;
+			if ($orphan !== null) {
+				unset($orphans[$link['device_setting_uuid']]);
+				if ($orphan['device_uuid'] === $link['device_uuid']
+					&& $orphan['device_setting_subcategory'] === $link['wallpaper_subcategory']
+					&& (string) $orphan['device_setting_value'] === (string) $link['wallpaper_value']
+					&& self::bool_value($orphan['device_setting_enabled'])) {
+					$plan['deletes'][] = ['link_uuid' => $link['wallpaper_link_uuid'], 'setting_uuid' => $link['device_setting_uuid'], 'value' => (string) $link['wallpaper_value'], 'enabled' => true];
+				}
+				else {
+					$plan['drop_links'][] = $link['wallpaper_link_uuid'];
+				}
+				continue;
+			}
 			$row = $settings[$link['device_setting_uuid']] ?? null;
 			if ($row === null
 				|| $row['device_uuid'] !== $link['device_uuid']
@@ -1040,6 +1127,9 @@ class provision_wallpapers {
 				continue;
 			}
 			$settings[$link['device_setting_uuid']]['managed'] = true;
+			if ($link['domain_uuid'] !== $domain_uuid) {
+				$plan['move_links'][] = $link['wallpaper_link_uuid'];
+			}
 			$managed[$link['device_uuid']][$link['wallpaper_subcategory']][] = [
 				'link_uuid' => $link['wallpaper_link_uuid'],
 				'setting_uuid' => $link['device_setting_uuid'],
@@ -1203,7 +1293,7 @@ class provision_wallpapers {
 		try {
 			$analysis = $this->analyze($domain_uuid, (string) $domains[$domain_uuid]['domain_name']);
 			$plan = $analysis['plan'];
-			if (empty($plan['inserts']) && empty($plan['updates']) && empty($plan['deletes']) && empty($plan['drop_links'])) {
+			if (empty($plan['inserts']) && empty($plan['updates']) && empty($plan['deletes']) && empty($plan['drop_links']) && empty($plan['move_links'])) {
 				$result['success'] = true;
 				return $result;
 			}
@@ -1222,11 +1312,22 @@ class provision_wallpapers {
 					$result['dropped']++;
 				}
 
-				//managed rows no longer wanted; only while they still hold the value written
+				//links of devices that moved into this domain
+				foreach ($plan['move_links'] as $link_uuid) {
+					$this->query("update v_x_provision_overlay_wallpaper_links set domain_uuid = :domain_uuid, update_date = now() where wallpaper_link_uuid = :uuid ", ['domain_uuid' => $domain_uuid, 'uuid' => $link_uuid]);
+				}
+
+				//managed rows no longer wanted; only while they still hold the value written and are enabled. When an
+				//admin changed, disabled or deleted the row since the analysis, the link stays and the next analysis
+				//sees what happened (a disabled row is an opt-out and must keep its link)
 				foreach ($plan['deletes'] as $row) {
 					$sql = "delete from v_device_settings ";
-					$sql .= "where device_setting_uuid = :uuid and device_setting_value = :value ";
-					$this->query($sql, ['uuid' => $row['setting_uuid'], 'value' => $row['value']]);
+					$sql .= "where device_setting_uuid = :uuid and device_setting_value = :value and device_setting_enabled = true ";
+					$sql .= "returning device_setting_uuid ";
+					$deleted = $this->query($sql, ['uuid' => $row['setting_uuid'], 'value' => $row['value']]);
+					if (empty($deleted)) {
+						continue;
+					}
 					$this->query("delete from v_x_provision_overlay_wallpaper_links where wallpaper_link_uuid = :uuid ", ['uuid' => $row['link_uuid']]);
 					$result['deleted']++;
 				}
@@ -1234,13 +1335,11 @@ class provision_wallpapers {
 				//new image for a managed row
 				foreach ($plan['updates'] as $row) {
 					$sql = "update v_device_settings set device_setting_value = :new_value, update_date = now() ";
-					$sql .= "where device_setting_uuid = :uuid and device_setting_value = :value ";
+					$sql .= "where device_setting_uuid = :uuid and device_setting_value = :value and device_setting_enabled = true ";
 					$sql .= "returning device_setting_uuid ";
 					$updated = $this->query($sql, ['new_value' => $row['new_value'], 'uuid' => $row['setting_uuid'], 'value' => $row['value']]);
 					if (empty($updated)) {
-						//changed by an admin since the analysis: theirs now
-						$this->query("delete from v_x_provision_overlay_wallpaper_links where wallpaper_link_uuid = :uuid ", ['uuid' => $row['link_uuid']]);
-						$result['dropped']++;
+						//changed, disabled or deleted by an admin since the analysis: the next analysis decides
 						continue;
 					}
 					$sql = "update v_x_provision_overlay_wallpaper_links set wallpaper_value = :value, wallpaper_group = :group, wallpaper_file = :file, update_date = now() ";
@@ -1302,20 +1401,36 @@ class provision_wallpapers {
 	}
 
 	/**
-	 * Syncs every domain.
+	 * Syncs every domain. The lock is taken once for the whole run (it is re-entrant); when another change
+	 * holds it the run gives up at once, and the next timer run tries again.
 	 *
-	 * @return array domain_uuid => sync result
+	 * @return array ['success' => bool, 'error' => string, 'results' => [domain_uuid => sync result]]
 	 */
 	public function sync_all(): array {
-		$results = [];
+		$run = ['success' => false, 'error' => '', 'results' => []];
+		if (!is_object($this->database)) {
+			$run['error'] = 'a database connection is required';
+			return $run;
+		}
 		$domains = $this->overlay->get_domains();
 		if (!is_array($domains)) {
-			return $results;
+			$run['error'] = 'the domains could not be read';
+			return $run;
 		}
-		foreach (array_keys($domains) as $domain_uuid) {
-			$results[$domain_uuid] = $this->sync_domain((string) $domain_uuid);
+		if (!$this->overlay->lock(self::sync_all_lock_timeout)) {
+			$run['error'] = 'the overlay lock is held by another change; the next run retries';
+			return $run;
 		}
-		return $results;
+		try {
+			foreach (array_keys($domains) as $domain_uuid) {
+				$run['results'][$domain_uuid] = $this->sync_domain((string) $domain_uuid);
+			}
+			$run['success'] = true;
+			return $run;
+		}
+		finally {
+			$this->overlay->unlock();
+		}
 	}
 
 	//-------------------------------------------------------------------------
@@ -1323,14 +1438,56 @@ class provision_wallpapers {
 	//-------------------------------------------------------------------------
 
 	/**
-	 * Deletes replaced or removed wallpaper files after the grace period, wallpaper files no metadata
-	 * records (older than the grace period), the asset directories and links of deleted domains.
+	 * Wallpaper file names still referenced anywhere provision.php or the sync may use them: links, and enabled
+	 * device, device profile, domain and default settings (e.g. rows copied by Devices > Copy, or a url pasted
+	 * into a setting). Null without a database or when a query fails: then nothing may be deleted.
+	 */
+	private function referenced_files(): ?array {
+		if (!is_object($this->database)) {
+			return null;
+		}
+		$queries = [
+			"select wallpaper_file as value from v_x_provision_overlay_wallpaper_links ",
+			"select wallpaper_value as value from v_x_provision_overlay_wallpaper_links ",
+			"select device_setting_value as value from v_device_settings where device_setting_enabled = true and device_setting_value like '%wp-%' ",
+			"select profile_setting_value as value from v_device_profile_settings where profile_setting_enabled = true and profile_setting_value like '%wp-%' ",
+			"select domain_setting_value as value from v_domain_settings where domain_setting_enabled = true and domain_setting_value like '%wp-%' ",
+			"select default_setting_value as value from v_default_settings where default_setting_enabled = true and default_setting_value like '%wp-%' ",
+		];
+		$names = [];
+		try {
+			foreach ($queries as $sql) {
+				foreach ($this->query($sql) as $row) {
+					if (preg_match_all('/wp-[0-9]{3,4}x[0-9]{3,4}-[0-9a-f]{8}\.(?:jpg|png)/', (string) ($row['value'] ?? ''), $matches) > 0) {
+						foreach ($matches[0] as $name) {
+							$names[$name] = true;
+						}
+					}
+				}
+			}
+		}
+		catch (Throwable $e) {
+			self::log_error('cleanup', $e->getMessage());
+			return null;
+		}
+		return $names;
+	}
+
+	/**
+	 * Daily cleanup:
+	 *  - wallpaper files replaced or removed more than a day ago, and wp- files no metadata records (first seen
+	 *    more than a day ago), unless still referenced (referenced_files()); nothing when that check fails;
+	 *  - scopes whose metadata cannot be read are skipped;
+	 *  - upload and temp files older than an hour (left by a request that died, e.g. out of memory);
+	 *  - the asset directory of a deleted domain a week after it was first seen missing (it also holds the
+	 *    domain's branding assets), and the links of deleted domains.
 	 *
-	 * @return array ['files' => int, 'domains' => int, 'links' => int, 'errors' => []]
+	 * @return array ['files' => int, 'kept' => int, 'temp' => int, 'domains' => int, 'links' => int, 'errors' => []]
 	 */
 	public function cleanup(int $now = 0): array {
-		$result = ['files' => 0, 'domains' => 0, 'links' => 0, 'errors' => []];
+		$result = ['files' => 0, 'kept' => 0, 'temp' => 0, 'domains' => 0, 'links' => 0, 'errors' => []];
 		$now = ($now > 0) ? $now : time();
+		$stamp = gmdate('c', $now);
 		if (!$this->overlay->lock()) {
 			$result['errors'][] = 'cannot acquire the overlay lock';
 			return $result;
@@ -1338,29 +1495,57 @@ class provision_wallpapers {
 		try {
 			//deleted domains: only with a domain list that was read successfully and is not empty
 			$domains = $this->overlay->has_database() ? $this->overlay->get_domains() : null;
+			$domains_known = is_array($domains) && !empty($domains);
+			$referenced = $this->referenced_files();
+			if ($referenced === null) {
+				$result['errors'][] = 'references could not be checked (no database or a query failed); no wallpaper file was deleted';
+			}
+
+			$missing_path = provision_overlay::assets_root().'/'.self::missing_domains_file;
+			$missing = is_file($missing_path) && !is_link($missing_path) ? json_decode((string) @file_get_contents($missing_path), true) : [];
+			$missing = is_array($missing) ? $missing : [];
+			$still_missing = [];
 			$scopes = [self::global_scope];
 			$root_entries = @scandir(provision_overlay::assets_root());
 			foreach (is_array($root_entries) ? $root_entries : [] as $entry) {
-				if (!provision_overlay::valid_uuid($entry)) {
-					continue;
-				}
 				$path = provision_overlay::assets_root().'/'.$entry;
-				if (is_link($path) || !is_dir($path)) {
+				if (!provision_overlay::valid_uuid($entry) || is_link($path) || !is_dir($path)) {
 					continue;
 				}
-				if (is_array($domains) && !empty($domains) && !isset($domains[$entry])) {
+				if ($domains_known && !isset($domains[$entry])) {
+					$since = isset($missing[$entry]) ? strtotime((string) $missing[$entry]) : false;
+					if ($since === false) {
+						$still_missing[$entry] = $stamp;
+						continue;
+					}
+					if ($now - $since < self::domain_grace_seconds) {
+						$still_missing[$entry] = (string) $missing[$entry];
+						continue;
+					}
 					if (self::remove_tree($path)) {
 						$result['domains']++;
 						self::log('assets_removed', $entry, 'domain deleted', 'cleanup');
 					}
 					else {
+						$still_missing[$entry] = (string) $missing[$entry];
 						$result['errors'][] = 'cannot remove '.$path;
 					}
 					continue;
 				}
 				$scopes[] = $entry;
 			}
-			if (is_array($domains) && !empty($domains)) {
+			if ($domains_known) {
+				ksort($still_missing, SORT_STRING);
+				if ($still_missing !== $missing) {
+					if (empty($still_missing)) {
+						@unlink($missing_path);
+					}
+					elseif (!self::write_atomic($missing_path, (string) json_encode($still_missing, JSON_PRETTY_PRINT)."\n")) {
+						$result['errors'][] = 'cannot write '.$missing_path;
+					}
+				}
+			}
+			if ($domains_known && is_object($this->database)) {
 				$sql = "delete from v_x_provision_overlay_wallpaper_links ";
 				$sql .= "where domain_uuid not in (select domain_uuid from v_domains) ";
 				$sql .= "returning wallpaper_link_uuid ";
@@ -1368,13 +1553,28 @@ class provision_wallpapers {
 				$result['links'] = is_array($rows) ? count($rows) : 0;
 			}
 
-			//retired files after the grace period, unrecorded wp- files
 			foreach ($scopes as $scope) {
 				$dir = self::scope_dir($scope);
-				if ($dir === null || !is_dir($dir)) {
+				if ($dir === null || !is_dir($dir) || is_link($dir)) {
 					continue;
 				}
+				$entries = @scandir($dir);
+				$entries = is_array($entries) ? $entries : [];
+
+				//uploads and temp files of requests that died
+				foreach ($entries as $entry) {
+					$path = $dir.'/'.$entry;
+					$temporary = strpos($entry, '.upload-') === 0 || strpos($entry, '.encoded-') === 0 || ($entry !== '' && $entry[0] === '.' && substr($entry, -4) === '.tmp');
+					if ($temporary && is_file($path) && !is_link($path) && $now - (int) filemtime($path) >= self::temp_grace_seconds && @unlink($path)) {
+						$result['temp']++;
+					}
+				}
+
 				$meta = self::read_meta($scope);
+				if ($meta === null) {
+					$result['errors'][] = 'skipped '.$dir.': '.self::meta_file.' cannot be read';
+					continue;
+				}
 				$current = [];
 				foreach ($meta['groups'] as $image) {
 					foreach ($image['files'] as $file) {
@@ -1382,36 +1582,49 @@ class provision_wallpapers {
 					}
 				}
 				$changed = false;
-				foreach ($meta['retired'] as $name => $time) {
-					$retired_at = strtotime($time);
-					if (isset($current[$name])) {
-						unset($meta['retired'][$name]);
+
+				//wp- files no metadata records get a first-seen time; they are handled like retired files from then
+				foreach ($entries as $entry) {
+					$path = $dir.'/'.$entry;
+					if (self::valid_file_name($entry) && !isset($current[$entry]) && !isset($meta['retired'][$entry]) && !isset($meta['unrecorded'][$entry]) && is_file($path) && !is_link($path)) {
+						$meta['unrecorded'][$entry] = $stamp;
 						$changed = true;
-						continue;
 					}
-					if ($retired_at !== false && $now - $retired_at < self::grace_seconds) {
-						continue;
+				}
+
+				foreach (['retired', 'unrecorded'] as $list) {
+					foreach ($meta[$list] as $name => $time) {
+						$path = $dir.'/'.$name;
+						if (isset($current[$name]) || ($list === 'unrecorded' && isset($meta['retired'][$name])) || !file_exists($path)) {
+							unset($meta[$list][$name]);
+							$changed = true;
+							continue;
+						}
+						$since = strtotime($time);
+						if ($since === false) {
+							//an unreadable time starts the grace period now
+							$meta[$list][$name] = $stamp;
+							$changed = true;
+							continue;
+						}
+						if ($now - $since < self::grace_seconds || $referenced === null) {
+							continue;
+						}
+						if (isset($referenced[$name])) {
+							$result['kept']++;
+							continue;
+						}
+						if (is_link($path) || !is_file($path) || !@unlink($path)) {
+							$result['errors'][] = 'cannot delete '.$path;
+							continue;
+						}
+						unset($meta[$list][$name]);
+						$changed = true;
+						$result['files']++;
 					}
-					if (is_file($dir.'/'.$name) && !is_link($dir.'/'.$name) && !@unlink($dir.'/'.$name)) {
-						$result['errors'][] = 'cannot delete '.$dir.'/'.$name;
-						continue;
-					}
-					unset($meta['retired'][$name]);
-					$changed = true;
-					$result['files']++;
 				}
 				if ($changed && !self::write_meta($scope, $meta)) {
 					$result['errors'][] = 'cannot write '.$dir.'/'.self::meta_file;
-				}
-				$entries = @scandir($dir);
-				foreach (is_array($entries) ? $entries : [] as $entry) {
-					$path = $dir.'/'.$entry;
-					if (!self::valid_file_name($entry) || isset($current[$entry]) || isset($meta['retired'][$entry]) || is_link($path) || !is_file($path)) {
-						continue;
-					}
-					if ($now - (int) filemtime($path) >= self::grace_seconds && @unlink($path)) {
-						$result['files']++;
-					}
 				}
 			}
 			return $result;
@@ -1419,6 +1632,15 @@ class provision_wallpapers {
 		finally {
 			$this->overlay->unlock();
 		}
+	}
+
+	/**
+	 * Logs an error detail to syslog; pages show a generic message instead.
+	 */
+	public static function log_error(string $context, string $detail): void {
+		openlog('FusionPBX', LOG_PID, LOG_LOCAL0);
+		syslog(LOG_ERR, 'x_provision_overlay: wallpapers: '.$context.': '.preg_replace('/[\r\n]+/', ' ', $detail));
+		closelog();
 	}
 
 	/**

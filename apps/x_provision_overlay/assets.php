@@ -80,10 +80,10 @@
 		x_provision_overlay_not_found();
 	}
 
-//the file must be a recorded asset of this domain (realpath checked); wp- names are wallpapers, recorded in
-//the domain's .wallpapers.json, else in the global one (system defaults)
-	if (strpos($file_name, provision_overlay::wallpaper_prefix) === 0) {
-		require_once __DIR__ . "/resources/classes/provision_wallpapers.php";
+//the file must be a recorded asset of this domain (realpath checked); wp-<group>-<hash>.<ext> names are
+//wallpapers, recorded in the domain's .wallpapers.json, else in the global one (system defaults)
+	require_once __DIR__ . "/resources/classes/provision_wallpapers.php";
+	if (provision_wallpapers::valid_file_name($file_name)) {
 		$asset = provision_wallpapers::file_info($domain_uuid, $file_name);
 		//content-hashed names: a new image gets a new name
 		$max_age = 86400;

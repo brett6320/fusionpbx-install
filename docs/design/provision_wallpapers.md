@@ -115,7 +115,20 @@ value still equals what we wrote:
 - row disabled by an admin: opt-out; left alone (documented as the way to opt
   a device out);
 - row deleted by an admin: the link is dropped; the next sync writes it again
-  (deleting is not an opt-out, disabling is).
+  (deleting is not an opt-out, disabling is);
+- device moved to another domain, or variable no longer in the catalog: the
+  row is deleted while it still holds the value written (and is enabled), then
+  the link is dropped. Links are selected by domain and by the domain's
+  current devices.
+
+The DELETE and UPDATE of a managed row are guarded by `device_setting_value =
+<written> and device_setting_enabled = true`, so a row an admin disabled
+between analysis and write is left as an opt-out.
+
+Snom D735, D765, D785, D862 and D865 read a model-specific variable we write
+and fall back to `snom_wallpaper_url`. A domain `snom_wallpaper_url` is counted
+as "own" for them conservatively, so the "own" label may be wrong for these
+models (the template may in fact prefer our value).
 
 `provision.php` keys device settings by subcategory only, so competing rows
 are matched by subcategory, any category. Duplicate managed rows for one
@@ -168,7 +181,10 @@ its managed rows are removed and the page shows a warning.
   time). The `wp-` prefix is reserved: ordinary asset uploads can't use it.
   Wallpapers don't count toward the 50-asset limit and are not listed with the
   other assets.
-- `assets.php` serves a `wp-` name only if it is recorded in the domain's
+- Only names of the form `wp-<group>-<hash8>.<jpg|png>` are wallpapers;
+  other `wp-*` assets (uploaded before this feature) stay ordinary assets.
+  New asset uploads named `wp-*` are stored as `wp_*`.
+- `assets.php` serves a wallpaper name only if it is recorded in the domain's
   `.wallpapers.json`, else in the global one, through its own path helper with
   the realpath check, after today's checks (domain exists, enabled,
   provisioning on). Content-hashed names may be cached for a day.
@@ -176,6 +192,19 @@ its managed rows are removed and the page shows a warning.
   deleted only after a grace period (a day, by the daily overlay job), so
   phones that already have the config can still download it. Removing an
   image deletes the settings first.
+- The cleanup deletes a retired file only if no link and no enabled device,
+  device profile, domain or default setting still contains its name (copied
+  devices, pasted URLs, failed syncs). Without a database, or if that check
+  fails, it deletes nothing. `wp-` files no metadata records get a first-seen
+  time in `unrecorded` and are handled like retired files from then (never by
+  mtime). Uploads (`.upload-*`) and temp files (`.*.tmp`) older than an hour
+  are removed (a request killed by an out-of-memory error leaves them).
+- An unreadable `.wallpapers.json` (invalid json, unreadable, symlink) stops
+  that scope: no sync of the domain (of every domain for the global one), no
+  cleanup there, no upload or remove. The page shows a generic error and logs
+  the detail.
+- The memory check counts a second copy of the source when the EXIF
+  orientation needs a rotation or flip.
 - Yealink keeps downloaded wallpapers in its own storage (the template asks to
   keep 2 MB free); removing an image here does not delete it from the phone,
   and each new image adds a file. Documented.
@@ -209,8 +238,14 @@ for system defaults.
 - Backups: `assets/global/` is under `/var/lib/fusionpbx`, already in bundles;
   the links table is in the database. After a restore the sync rebuilds the
   rows from the image metadata.
-- Domain delete: the daily overlay job removes `assets/<uuid>` of deleted
-  domains.
+- Domain delete: the daily overlay job records when it first sees
+  `assets/<uuid>` without a domain (`assets/.wallpapers-missing-domains.json`)
+  and removes the folder (it also holds branding assets) a week later; a
+  domain that reappears is dropped from the list.
+- `sync_all` takes the overlay lock once for the run, waiting at most 5 s; if
+  another change holds it the run ends (exit 0) and the next timer run retries.
+  One domain failing is logged; the unit fails only when every domain failed
+  or the run itself failed.
 - `provision_overlay.md`: correct 2.3 (Yealink templates do read
   `yealink_<model>_wallpaper`), and 3.4 (apply to vendor settings no longer
   covers wallpapers).

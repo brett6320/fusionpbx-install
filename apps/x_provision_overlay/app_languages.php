@@ -175,7 +175,8 @@ $text['error-wallpaper_group']['en-us'] = "Unknown wallpaper size.";
 $text['error-wallpaper_type']['en-us'] = "Only PNG and JPEG images are allowed.";
 $text['error-wallpaper_memory']['en-us'] = "The image has too many pixels for the PHP memory limit. Upload a smaller image.";
 $text['error-wallpaper_too_large']['en-us'] = "The image cannot be made small enough for these phones. Upload a simpler image.";
-$text['error-wallpaper_sync']['en-us'] = "The image was saved but the phones could not be linked; the next automatic run retries.";
-$text['error-wallpaper_analysis']['en-us'] = "The devices could not be checked:";
+$text['error-wallpaper_sync']['en-us'] = "The image was saved but the phones could not be linked; the next automatic run retries. The details are in the system log.";
+$text['error-wallpaper_analysis']['en-us'] = "The devices could not be checked. The details are in the system log.";
+$text['error-wallpaper_meta']['en-us'] = "The wallpaper list of this scope cannot be read, so wallpapers are not changed and phones are not relinked until it is fixed. The details are in the system log.";
 
 ?>

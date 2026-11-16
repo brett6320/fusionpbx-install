@@ -113,7 +113,8 @@
 						message::add($text[$warning] ?? escape($warning), 'alert');
 					}
 					if (is_array($result['sync']) && !$result['sync']['success']) {
-						message::add($text['error-wallpaper_sync'].' '.escape($result['sync']['error']), 'negative');
+						provision_wallpapers::log_error('sync '.$domain_uuid, $result['sync']['error']);
+						message::add($text['error-wallpaper_sync'], 'negative');
 					}
 				}
 				else {
@@ -128,6 +129,8 @@
 //get the data
 	$specs = provision_wallpapers::group_specs();
 	$meta = provision_wallpapers::read_meta($scope);
+	$meta_error = ($meta === null);
+	$meta = $meta ?? ['groups' => [], 'retired' => [], 'unrecorded' => []];
 	$analysis = null;
 	$analysis_error = '';
 	if (!$scope_global) {
@@ -135,7 +138,8 @@
 			$analysis = $wallpapers->analyze($domain_uuid, $domain_name);
 		}
 		catch (Throwable $e) {
-			$analysis_error = $e->getMessage();
+			provision_wallpapers::log_error('analyze '.$domain_uuid, $e->getMessage());
+			$analysis_error = $text['error-wallpaper_analysis'];
 		}
 	}
 
@@ -181,8 +185,13 @@
 		echo "<div class='card'>".str_replace(['{max}', '{limit}'], [escape((string) $max_side), escape((string) ini_get('memory_limit'))], $text['warning-wallpaper_memory'])."</div>\n";
 		echo "<br />\n";
 	}
+	if ($meta_error) {
+		provision_wallpapers::log_error('metadata '.$scope, 'cannot read '.provision_wallpapers::scope_dir($scope).'/'.provision_wallpapers::meta_file);
+		echo "<div class='card'>".$text['error-wallpaper_meta']."</div>\n";
+		echo "<br />\n";
+	}
 	if ($analysis_error !== '') {
-		echo "<div class='card'>".$text['error-wallpaper_analysis'].' '.escape($analysis_error)."</div>\n";
+		echo "<div class='card'>".$analysis_error."</div>\n";
 		echo "<br />\n";
 	}
 	if (is_array($analysis) && !empty($analysis['unsupported'])) {

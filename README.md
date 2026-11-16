@@ -157,7 +157,10 @@ the next time it fetches its configuration; some models only do so at boot.
   `provision.yealink_t46s_wallpaper`). Such devices are listed on the page as
   "uses its own wallpaper"; remove that value to switch them to the managed
   one. Domain settings written by the older "apply to vendor settings" button
-  count as such a value.
+  count as such a value. Snom D735, D765, D785, D862 and D865 are counted as
+  "own" whenever the domain sets `snom_wallpaper_url`, to be safe, although
+  their templates may prefer the model-specific value we write; the label can
+  be wrong for them.
 - **To opt one device out**, disable its wallpaper rows in the device's
   settings. Deleting them is not an opt-out: they are written again. Changing
   a value makes the row yours; it is then left alone.
@@ -166,7 +169,11 @@ the next time it fetches its configuration; some models only do so at boot.
   devices are unlinked and the page shows a warning.
 - A new image gets a new file name, so phones download it again. Replaced or
   removed files stay downloadable for a day, then the daily overlay job deletes
-  them, together with the images of deleted domains.
+  them, unless a setting anywhere still points at the file (for example a
+  device copied with its settings, or the URL pasted into a domain setting).
+  The asset folder of a deleted domain is removed a week after the job first
+  sees the domain missing. If a `.wallpapers.json` cannot be read, nothing in
+  that scope is changed or deleted until it is fixed (the error is in syslog).
 - Yealink phones keep downloaded wallpapers in their own storage (the
   templates ask the phone to keep 2 MB free); removing an image here does not
   delete it from the phones, and each new image adds a file.
