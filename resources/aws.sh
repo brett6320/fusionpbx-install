@@ -7,6 +7,8 @@
 #   install, each feed's first run is approved here (the security group already admits these addresses).
 # - SIP addresses: external_sip_ip and external_rtp_ip become the Elastic IP (EC2 uses 1:1 NAT), but only if
 #   IMDS and AWS show this instance holds it, so a restored or cloned disk never takes production's address.
+# - Instance metadata: only root may reach it (x-imds-guard), so code running as www-data cannot take the
+#   instance role's credentials.
 #
 # Usage: resources/aws.sh install|upgrade
 set -euo pipefail
@@ -31,8 +33,20 @@ remove_timer() {
 	systemctl daemon-reload
 	warn "Removed x-aws-sync.timer. The AWS carrier ACL feeds, if any, keep their entries; disable them in Advanced > Carrier ACL if they are no longer wanted."
 }
+#the metadata guard goes with the file: harmless without it, but this host is then no longer configured for AWS.
+#An invalid file keeps the guard, so a typo never weakens the host.
+remove_guard() {
+	[ -f /etc/systemd/system/x-imds-guard.service ] || return 0
+	systemctl disable x-imds-guard.service 2>/dev/null || true
+	/usr/local/sbin/x-imds-guard remove 2>/dev/null || true
+	rm -f /etc/systemd/system/x-imds-guard.service /usr/local/sbin/x-imds-guard \
+		/etc/systemd/system/netfilter-persistent.service.d/x_imds_guard.conf /etc/systemd/system/nftables.service.d/x_imds_guard.conf
+	systemctl daemon-reload
+	warn "Removed the instance metadata guard (x-imds-guard)."
+}
 if [ ! -e "$settings" ]; then
 	remove_timer
+	remove_guard
 	exit 0
 fi
 
@@ -70,6 +84,41 @@ aws_sync() {
 
 install -o root -g root -m 0755 resources/sbin/x-aws-sync /usr/local/sbin/x-aws-sync
 install -d -o root -g root -m 0755 /var/lib/x_carrier_acl /var/lib/x_carrier_acl/aws
+
+#-------------------------------------------------------------------------------------------------------------------
+# 0. instance metadata for root only; re-applied at boot and after netfilter-persistent or nftables start (their
+#    restore flushes our rules). A firewall reload without a restart drops it until the next boot or apply.
+#-------------------------------------------------------------------------------------------------------------------
+install -o root -g root -m 0755 resources/sbin/x-imds-guard /usr/local/sbin/x-imds-guard
+cat > /etc/systemd/system/x-imds-guard.service <<'EOF'
+[Unit]
+Description=Allow only root to reach the EC2 instance metadata service
+;before the network is up, like nftables.service, so nothing reaches the metadata service before the rule exists
+DefaultDependencies=no
+After=local-fs.target netfilter-persistent.service nftables.service
+Before=network-pre.target shutdown.target
+Wants=network-pre.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/x-imds-guard apply
+
+[Install]
+WantedBy=multi-user.target
+EOF
+for service in netfilter-persistent nftables; do
+	install -d -o root -g root -m 0755 "/etc/systemd/system/$service.service.d"
+	printf '[Unit]\nWants=x-imds-guard.service\nBefore=x-imds-guard.service\n' > "/etc/systemd/system/$service.service.d/x_imds_guard.conf"
+	chmod 0644 "/etc/systemd/system/$service.service.d/x_imds_guard.conf"
+done
+systemctl daemon-reload
+systemctl enable x-imds-guard.service
+if ! systemctl start x-imds-guard.service || ! /usr/local/sbin/x-imds-guard check; then
+	msg="Could not restrict instance metadata to root; see: journalctl -u x-imds-guard.service"
+	[ "$mode" = install ] && die "$msg"
+	warn "$msg"
+fi
 
 #-------------------------------------------------------------------------------------------------------------------
 # 1. hourly refresh of the prefix lists; first, because apply.sh stopped every x- timer and a failure further down

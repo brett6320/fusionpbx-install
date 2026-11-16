@@ -83,6 +83,18 @@ echo "PASS  vars.xml and FreeSWITCH use the Elastic IP"
 entries=$(psql_value "select e.entry_role || ':' || count(*) from v_x_carrier_acl_entries e join v_x_carrier_acl_feeds f using (x_carrier_acl_feed_uuid) where f.feed_url like 'file://%' group by e.entry_role order by 1")
 [ "$entries" = "$(printf 'media:2\nsignaling:2')" ] || { echo "FAIL  AWS feed entries: $entries"; exit 1; }
 echo "PASS  AWS prefix lists applied to the carrier ACL"
+#instance metadata: www-data is refused by our rule (its counter moves); root is not matched (counter unchanged).
+#There is no metadata service in a container, so only the rule's counter tells the cases apart.
+docker exec "$name" /usr/local/sbin/x-imds-guard check || { echo "FAIL  metadata guard not applied"; exit 1; }
+imds_hits() {
+	docker exec "$name" bash -c 'if command -v nft >/dev/null; then nft list table inet x_imds_guard | sed -n "s/.*ip daddr 169.254.169.254.*counter packets \([0-9]*\).*/\1/p"; else iptables -w -vnxL OUTPUT | awk "/x_imds_guard/ && /169.254.169.254/ {print \$1}"; fi' | head -n 1
+}
+before=$(imds_hits)
+docker exec "$name" curl -s -m 3 -o /dev/null http://169.254.169.254/ || true
+[ "$(imds_hits)" = "$before" ] || { echo "FAIL  root matched the metadata guard"; exit 1; }
+rc=0; docker exec "$name" runuser -u www-data -- curl -s -m 3 -o /dev/null http://169.254.169.254/ || rc=$?
+[ "$rc" -eq 7 ] && [ "$(imds_hits)" -gt "$before" ] || { echo "FAIL  www-data not refused by the metadata guard (curl exit $rc)"; exit 1; }
+echo "PASS  instance metadata limited to root"
 
 #an admin's own value is kept, and a deleted feed is not recreated
 psql_value "update v_vars set var_value = '198.51.100.7' where var_name = 'external_rtp_ip'" >/dev/null

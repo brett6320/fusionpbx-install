@@ -118,6 +118,15 @@ Elastic IP; the template grants this.
   feed is approved automatically, because the security groups already allow
   exactly these addresses. A broad prefix still waits for approval. The feeds
   are created once: a feed you delete stays deleted.
+- **Instance metadata.** Only root can reach the EC2 instance metadata service
+  (`x-imds-guard`). It hands out the instance role's credentials, which can
+  also write backups. The web app, FreeSWITCH and the workers run as other
+  users and are refused. Root keeps access (`x-aws-sync`, cloud-init, the SSM
+  agent), and the AWS time service is not affected. Run the AWS CLI with `sudo`
+  on the host, including in Session Manager shells (`ssm-user`). Anything else
+  that needs the instance role as another user is refused too, such as the
+  CloudWatch agent (`cwagent` by default; run it as root). The rule is re-applied at boot and when `netfilter-persistent`
+  or `nftables` restarts; after a firewall reload, run `x-imds-guard`.
 - If AWS can't be reached during install, the install continues with a
   warning. The feeds then report the failure. Fix the cause and run
   `x-aws-sync`.

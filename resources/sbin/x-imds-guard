@@ -1,0 +1,74 @@
+#!/bin/bash
+# Only root may reach the EC2 instance metadata service (169.254.169.254, fd00:ec2::254). It hands out the instance
+# role's credentials, and IMDSv2 stops SSRF but not code running as www-data (the web app, FreeSWITCH, workers).
+# Root keeps access: x-aws-sync, cloud-init and the SSM agent run as root. The time service (169.254.169.123) is
+# not affected.
+#
+# Uses an nftables table of its own when nft exists, else iptables/ip6tables rules in OUTPUT. Idempotent.
+# Installed by resources/aws.sh; run at boot and after netfilter-persistent/nftables start (systemd drop-ins).
+#
+# Usage: x-imds-guard [apply|remove|check]
+set -euo pipefail
+
+v4=169.254.169.254
+v6=fd00:ec2::254
+table=x_imds_guard
+comment=x_imds_guard
+
+iptables_rule() {
+	local cmd=$1 action=$2 address=$3
+	"$cmd" -w "$action" OUTPUT -d "$address" -m owner ! --uid-owner 0 -m comment --comment "$comment" -j REJECT
+}
+
+apply() {
+	if command -v nft >/dev/null 2>&1; then
+		nft -f - <<NFT
+table inet $table
+delete table inet $table
+table inet $table {
+	chain output {
+		type filter hook output priority 0; policy accept;
+		ip daddr $v4 meta skuid != 0 counter reject
+		ip6 daddr $v6 meta skuid != 0 counter reject
+	}
+}
+NFT
+		return
+	fi
+	iptables_rule iptables -C "$v4" 2>/dev/null || iptables_rule iptables -I "$v4"
+	if command -v ip6tables >/dev/null 2>&1 && [ -d /proc/sys/net/ipv6 ]; then
+		iptables_rule ip6tables -C "$v6" 2>/dev/null || iptables_rule ip6tables -I "$v6"
+	fi
+}
+
+remove() {
+	if command -v nft >/dev/null 2>&1; then
+		nft delete table inet "$table" 2>/dev/null || true
+	fi
+	if command -v iptables >/dev/null 2>&1; then
+		while iptables_rule iptables -D "$v4" 2>/dev/null; do :; done
+	fi
+	if command -v ip6tables >/dev/null 2>&1; then
+		while iptables_rule ip6tables -D "$v6" 2>/dev/null; do :; done
+	fi
+	#a "netfilter-persistent save" may have stored the iptables rules, which would bring them back at boot
+	for saved in /etc/iptables/rules.v4 /etc/iptables/rules.v6; do
+		if [ -f "$saved" ] && grep -q -- "$comment" "$saved"; then
+			sed -i "/$comment/d" "$saved"
+		fi
+	done
+}
+
+check() {
+	if command -v nft >/dev/null 2>&1 && nft list table inet "$table" >/dev/null 2>&1; then
+		return 0
+	fi
+	command -v iptables >/dev/null 2>&1 && iptables_rule iptables -C "$v4" 2>/dev/null
+}
+
+case "${1:-apply}" in
+	apply) apply ;;
+	remove) remove ;;
+	check) check ;;
+	*) echo "usage: x-imds-guard [apply|remove|check]" >&2; exit 64 ;;
+esac

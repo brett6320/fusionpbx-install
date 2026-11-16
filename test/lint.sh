@@ -8,7 +8,7 @@ status=0
 echo "== shellcheck"
 #bash 3 compatible (macOS); script names contain no spaces
 # shellcheck disable=SC2046
-shellcheck -x -P SCRIPTDIR $(git ls-files --cached --others --exclude-standard '*.sh') resources/sbin/x-backup || status=1
+shellcheck -x -P SCRIPTDIR $(git ls-files --cached --others --exclude-standard '*.sh') resources/sbin/x-backup resources/sbin/x-imds-guard || status=1
 
 echo "== php -l (php:8.4-cli)"
 docker run --rm -v "$PWD:/src:ro" -w /src php:8.4-cli \
