@@ -29,6 +29,9 @@ db "insert into v_devices (device_uuid, domain_uuid, device_address, device_vend
 check "provisioning requires auth (401)" test "$(curl -sk -o /dev/null -w '%{http_code}' -H "Host: $test_domain" "https://127.0.0.1/app/provision/?mac=0011223344aa&file=0011223344aa.cfg")" = 401
 db "delete from v_devices where device_uuid = '$test_device'" >/dev/null
 
+#phone codec order for the provisioning templates
+check "codec order seeded" test "$(db "select string_agg(default_setting_value, ',' order by default_setting_subcategory) from v_default_settings where default_setting_category = 'provision' and default_setting_subcategory like 'x\_codec\__' and default_setting_enabled")" = "OPUS,G.722,PCMU,PCMA,G.723.1,G.729A/B,G.726-32,iLBC"
+
 #dark theme is the default (core/themes: Cobalt Blue)
 check "dark theme is the default" test "$(db "select default_setting_value from v_default_settings where default_setting_uuid='b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' and default_setting_enabled")" = "eda762b3-e356-4225-a394-38b5f092fd44"
 

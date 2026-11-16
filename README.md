@@ -92,6 +92,20 @@ A default install has a self-signed certificate, which most phones reject.
 Install a trusted certificate (upstream ships a Let's Encrypt script) or turn
 off certificate checks on the phones.
 
+## Phone codec order
+
+One codec order for every phone: **Advanced > Default Settings > Provision >
+`x_codec_1` to `x_codec_8`**, highest priority first. The installer seeds
+OPUS, G.722, PCMU, PCMA, G.723.1, G.729A/B, G.726-32, iLBC; changes made there
+are kept on upgrade. Codec names: `OPUS`, `G.722`, `PCMU`, `PCMA`, `G.723.1`,
+`G.729A/B`, `G.726-32`, `iLBC`; an empty value skips the slot.
+
+Upstream's templates don't read it; the Provision Templates overrides do.
+Each override maps the names to its phone's format, skips codecs that phone
+lacks (for example OPUS on a DP750), and fills its remaining slots. Upstream
+Yealink templates keep their own `yealink_codec_*` settings. Phones pick up a
+change at their next provisioning.
+
 ## Theme
 
 The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,
