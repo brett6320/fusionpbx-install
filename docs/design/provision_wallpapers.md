@@ -18,8 +18,9 @@ to the commit pinned in `config.sh` (`58ca4e9`).
   page shows each group's requirements and a preview.
 - First version: phones whose upstream templates already take a wallpaper URL
   from a setting. Phones that need a template override (Cisco, Fanvil, Htek,
-  most Polycom, Digium, Grandstream GRP2612-2616) come later, after testing on
-  hardware.
+  most Polycom, Digium, the per-model Grandstream GRP2612-2616 templates)
+  come later, after testing on hardware. The shared `grandstream/grp261x`
+  template was added after the first version (2.1).
 
 ## 2. Size groups (first version)
 
@@ -27,8 +28,8 @@ From the research in the PR. Format = what is generated for that model.
 
 | Group | Models (device template) | Format, limit |
 |---|---|---|
-| `320x240` | yealink/t32g t33g t34w t44w t52s t73u t73w; snom/D735 D765; grandstream/gxp2130 gxp2135; avaya/J139 J179 | Yealink, Grandstream JPEG ≤500 KB; Snom PNG ≤500 KB; Avaya JPEG ≤256 KB |
-| `480x272` | yealink/t29g t38g t46g t46s t46u t54s t54w t74u t74w; snom/D375 D385 D785; grandstream/gxp2140 gxp2160 gxp2170; polycom/vvx450; poly/poly-vvx-450 | JPEG (Grandstream ≤500 KB); Snom PNG ≤500 KB |
+| `320x240` | yealink/t32g t33g t34w t44w t52s t73u t73w; snom/D735 D765; grandstream/gxp2130 gxp2135 grp261x (GRP2612/2612W/2613/2614/2616, 2.1); avaya/J139 J179 | Yealink, Grandstream JPEG ≤500 KB; Snom PNG ≤500 KB; Avaya JPEG ≤256 KB |
+| `480x272` | yealink/t29g t38g t46g t46s t46u t54s t54w t74u t74w; snom/D375 D385 D785; grandstream/gxp2140 gxp2160 gxp2170 grp261x (GRP2615, 2.1); polycom/vvx450; poly/poly-vvx-450 | JPEG (Grandstream ≤500 KB); Snom PNG ≤500 KB |
 | `800x480` | yealink/t48g t48s t48u t57w t77u t87w vp530 cp925; avaya/J189 | JPEG (Avaya ≤256 KB) |
 | `1024x600` | yealink/t56a t58a t58v t58w t88v t88w | JPEG ≤1 MB |
 | `960x480` | yealink/t85w | JPEG |
@@ -44,13 +45,32 @@ strictest limit of its members of that format.
 Left out of the first version:
 
 - mixed templates, where the template does not tell the model: `yealink/t2x`,
-  `t4x`, `t5x`, `polycom/5.x`, `6.x`, `grandstream/grp261x`, `grp26xx`
+  `t4x`, `t5x`, `polycom/5.x`, `6.x`, `grandstream/grp26xx`
   (GRP2615 is 480x272, the others 320x240). A later version can resolve the
-  model from `v_devices.device_provisioned_agent`;
+  model from `v_devices.device_provisioned_agent` (as 2.1 does for
+  `grp261x`);
 - conflicting or unverified specs: snom/D717 (426x240 vs 320x240), D812/D815
   (template says 1280x720, datasheets 480x272), polycom/ccx500, sangoma/s500
   and s700 (the template hard-codes `Preference.WallPaper=5`, unverified);
 - the Avaya J189 secondary screen.
+
+### 2.1 Grandstream GRP261x
+
+At the pin only the shared `grandstream/grp261x` template prints
+`{$grandstream_wallpaper_url}` (`lcd.wallpaper.serverPath`). The per-model
+`grp2612`, `grp2612w`, `grp2613`, `grp2614`, `grp2615` and `grp2616` templates
+test it but write an empty `lcd.wallpaper.serverPath`, so they stay out until
+a template override fills it.
+
+`grp261x` serves models of two sizes: GRP2615 is 480x272, the others
+320x240. Its catalog entry is in the 320x240 group and lists
+`'models' => ['GRP2615' => '480x272']`: a device whose `device_model` or
+`device_provisioned_agent` names GRP2615 gets the 480x272 group. Each device
+gets its own value of the same variable, so nothing else changes. A GRP2615
+that has never provisioned and has no model set gets the 320x240 image at its
+first fetch (`provision.php` records the user agent while rendering); the next
+sync updates its row and the next fetch corrects it. Sizes and limits as the
+GXP21xx; not tested on hardware.
 
 ## 3. Linking phones to their group: device settings
 

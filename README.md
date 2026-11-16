@@ -138,10 +138,17 @@ Supported in this version (templates that already read a wallpaper URL from a
 setting): Yealink T29G, T32G, T33G, T34W, T38G, T44W, T46G/S/U, T48G/S/U, T49G,
 T52S, T54S/W, T56A, T57W, T58A/V/W, T73U/W, T74U/W, T77U, T85W, T87W, T88V/W,
 VP530, CP925, CP960, CP965, AX83H, AX86R; Snom D375, D385, D735, D765, D785,
-D862, D865; Grandstream GXP2130/2135/2140/2160/2170, GXV3480, WP820; Avaya
-J139, J179, J189; Polycom VVX450 (`polycom/vvx450` and `poly/poly-vvx-450`).
-Mixed templates (`yealink/t2x`, `t4x`, `t5x`, `polycom/5.x`, `6.x`,
-`grandstream/grp261x`) and other models are not covered; they need a template
+D862, D865; Grandstream GXP2130/2135/2140/2160/2170, GRP2612/2612W/2613/2614/
+2616 and GRP2615 on the shared `grandstream/grp261x` template, GXV3480, WP820;
+Avaya J139, J179, J189; Polycom VVX450 (`polycom/vvx450` and
+`poly/poly-vvx-450`). On `grp261x` a GRP2615 gets the 480x272 image and the
+others the 320x240 one; the model comes from the device's model field or
+from the user agent the phone reports when it fetches its configuration, so
+a GRP2615 with no model set gets the 320x240 image at its first fetch and the
+480x272 one from the next. The per-model `grandstream/grp2612`-`grp2616`
+templates are not covered: they leave the wallpaper server path empty. Other
+mixed templates (`yealink/t2x`, `t4x`, `t5x`, `polycom/5.x`, `6.x`,
+`grandstream/grp26xx`) and other models are not covered; they need a template
 override. Sizes come from vendor documentation and have not all been tested
 on hardware.
 
