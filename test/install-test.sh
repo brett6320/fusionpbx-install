@@ -97,6 +97,9 @@ docker exec "$name" grep -q 'data="external_sip_ip=203.0.113.10"' /etc/freeswitc
 docker exec "$name" grep -q 'data="external_rtp_ip=203.0.113.10"' /etc/freeswitch/vars.xml || { echo "FAIL  vars.xml external_rtp_ip"; exit 1; }
 [ "$(docker exec "$name" fs_cli -x 'global_getvar external_sip_ip' | tr -d '[:space:]')" = 203.0.113.10 ] || { echo "FAIL  FreeSWITCH external_sip_ip"; exit 1; }
 echo "PASS  vars.xml and FreeSWITCH use the Elastic IP"
+docker exec "$name" grep -q 'data="outbound_codec_prefs=G722,PCMU,PCMA"' /etc/freeswitch/vars.xml || { echo "FAIL  vars.xml outbound_codec_prefs"; exit 1; }
+docker exec "$name" fs_cli -x 'global_getvar outbound_codec_prefs' | tr -d '[:space:]' | grep -qx 'G722,PCMU,PCMA' || { echo "FAIL  FreeSWITCH outbound_codec_prefs"; exit 1; }
+echo "PASS  outbound codecs G722,PCMU,PCMA"
 entries=$(psql_value "select e.entry_role || ':' || count(*) from v_x_carrier_acl_entries e join v_x_carrier_acl_feeds f using (x_carrier_acl_feed_uuid) where f.feed_url like 'file://%' group by e.entry_role order by 1")
 [ "$entries" = "$(printf 'media:2\nsignaling:2')" ] || { echo "FAIL  AWS feed entries: $entries"; exit 1; }
 echo "PASS  AWS prefix lists applied to the carrier ACL"
