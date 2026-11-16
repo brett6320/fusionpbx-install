@@ -254,7 +254,8 @@ Resources:
       # It first writes /etc/default/fusionpbx-aws (no network needed, so a
       # failure can't block the agent), so the application can
       # configure carrier ACLs and SIP addresses from the Telnyx lists and the
-      # Elastic IP (the instance role can read both).
+      # Elastic IP, and Fail2ban's whitelist from the SSH, web and endpoint
+      # lists (the instance role can read all of them).
       # Write shell variables without braces: !Sub would expand ${...}.
       UserData:
         Fn::Base64: !Sub |
@@ -269,6 +270,9 @@ Resources:
           ELASTIC_IP_ALLOCATION_ID=${ElasticIp.AllocationId}
           TELNYX_SIGNALLING_PREFIX_LIST_ID=${TelnyxSignallingPrefixListId}
           TELNYX_MEDIA_PREFIX_LIST_ID=${TelnyxMediaPrefixListId}
+          SSH_PREFIX_LIST_ID=${SshPrefixListId}
+          WEB_PREFIX_LIST_ID=${WebPrefixListId}
+          ENDPOINT_PREFIX_LIST_ID=${EndpointPrefixListId}
           EOF
           chmod 0644 /etc/default/fusionpbx-aws
           command -v curl >/dev/null || { apt-get update && apt-get install -y curl; }
@@ -352,7 +356,8 @@ Resources:
               - Effect: Allow
                 Action: [s3:ListBucket, s3:ListBucketVersions]
                 Resource: !GetAtt BackupBucket.Arn
-        # Read the Telnyx lists and the Elastic IP named in
+        # Read the prefix lists (Telnyx for the carrier ACL; SSH, web and
+        # endpoints for the Fail2ban whitelist) and the Elastic IP named in
         # /etc/default/fusionpbx-aws. The two Describe calls have no
         # resource-level permissions, so they take "*", limited to this region.
         # Any account in the list ARNs, in case a list is shared through RAM.
@@ -365,6 +370,9 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${TelnyxSignallingPrefixListId}
                   - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${TelnyxMediaPrefixListId}
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${SshPrefixListId}
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${WebPrefixListId}
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${EndpointPrefixListId}
               - Effect: Allow
                 Action: ec2:DescribeAddressesAttribute
                 Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${ElasticIp.AllocationId}

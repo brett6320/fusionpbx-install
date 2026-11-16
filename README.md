@@ -132,6 +132,23 @@ Elastic IP; the template grants this.
   that needs the instance role as another user is refused too, such as the
   CloudWatch agent (`cwagent` by default; run it as root). The rule is re-applied at boot and when `netfilter-persistent`
   or `nftables` restarts; after a firewall reload, run `x-imds-guard`.
+- **Fail2ban whitelist.** If the file names the SSH, web and endpoint prefix
+  lists (`SSH_PREFIX_LIST_ID`, `WEB_PREFIX_LIST_ID`,
+  `ENDPOINT_PREFIX_LIST_ID`), Fail2ban never bans their addresses
+  (`/etc/fail2ban/jail.d/x-aws-ignoreip.local`, rewritten after each hourly
+  `x-aws-sync`). It applies to every jail, because upstream's jails block all
+  ports: a phone that fails provisioning would otherwise cut off SIP for its
+  whole office. Addresses already banned are unbanned once whitelisted.
+  - The security groups only let these lists connect to SSH, web and SIP, so
+    in practice Fail2ban then bans nobody on those ports; the security groups
+    are the access control.
+  - Networks broader than /16, such as `0.0.0.0/0` in the web list, are
+    skipped with a warning: whitelisting them would turn off brute-force
+    protection for everyone.
+  - Addresses and networks in a `[DEFAULT]` `ignoreip` in `jail.local` are
+    kept (host names are not).
+  - Without the three keys, or once they are removed, there is no whitelist. An
+    invalid value only skips that list, with a warning.
 - If AWS can't be reached during install, the install continues with a
   warning. The feeds then report the failure. Fix the cause and run
   `x-aws-sync`.

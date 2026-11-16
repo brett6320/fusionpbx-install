@@ -9,6 +9,8 @@
 #   IMDS and AWS show this instance holds it, so a restored or cloned disk never takes production's address.
 # - Instance metadata: only root may reach it (x-imds-guard), so code running as www-data cannot take the
 #   instance role's credentials.
+# - Fail2ban whitelist: the optional SSH, web and endpoint prefix lists become the ignoreip of every jail
+#   (x-fail2ban-ignoreip, run after each x-aws-sync).
 #
 # Usage: resources/aws.sh install|upgrade
 set -euo pipefail
@@ -44,9 +46,16 @@ remove_guard() {
 	systemctl daemon-reload
 	warn "Removed the instance metadata guard (x-imds-guard)."
 }
+#the whitelist goes with the file too; an invalid file keeps it, like the guard
+remove_whitelist() {
+	[ -x /usr/local/sbin/x-fail2ban-ignoreip ] || return 0
+	/usr/local/sbin/x-fail2ban-ignoreip --remove || warn "Could not remove the Fail2ban whitelist (/etc/fail2ban/jail.d/x-aws-ignoreip.local)."
+	rm -f /usr/local/sbin/x-fail2ban-ignoreip /var/lib/x_carrier_acl/aws/allow-*.json
+}
 if [ ! -e "$settings" ]; then
 	remove_timer
 	remove_guard
+	remove_whitelist
 	exit 0
 fi
 
@@ -69,7 +78,8 @@ as_www() {
 sync_cmd=${X_AWS_SYNC_CMD:-/usr/local/sbin/x-aws-sync}
 
 #instance role credentials and the Elastic IP association can lag first boot; exit 2 is a permanent error (this is
-#not the instance or address in the file, access denied, not found), which no retry fixes
+#not the instance or address in the file, access denied, not found), which no retry fixes. Exit 3: the Telnyx lists
+#were written but a whitelist list was not (the hourly timer retries it)
 aws_sync() {
 	local attempt rc
 	for attempt in 1 2 3 4 5; do
@@ -77,12 +87,14 @@ aws_sync() {
 		"$sync_cmd" "$@" || rc=$?
 		[ "$rc" -eq 0 ] && return 0
 		[ "$rc" -eq 2 ] && return 2
+		[ "$rc" -eq 3 ] && return 3
 		[ "$attempt" -lt 5 ] && sleep $((attempt * 8))
 	done
 	return 1
 }
 
 install -o root -g root -m 0755 resources/sbin/x-aws-sync /usr/local/sbin/x-aws-sync
+install -o root -g root -m 0755 resources/sbin/x-fail2ban-ignoreip /usr/local/sbin/x-fail2ban-ignoreip
 install -d -o root -g root -m 0755 /var/lib/x_carrier_acl /var/lib/x_carrier_acl/aws
 
 #-------------------------------------------------------------------------------------------------------------------
@@ -133,6 +145,9 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStart=/usr/local/sbin/x-aws-sync
+;"+": outside the sandbox below (it writes /etc/fail2ban and reloads Fail2ban); after every run, including a partly
+;failed one, from whatever allow-*.json files are there
+ExecStopPost=+/usr/local/sbin/x-fail2ban-ignoreip
 TimeoutStartSec=5min
 StateDirectory=x_carrier_acl/aws
 StateDirectoryMode=0755
@@ -171,11 +186,18 @@ enable_unit x-aws-sync.timer
 # 2. prefix lists
 #-------------------------------------------------------------------------------------------------------------------
 synced=true
-if ! aws_sync; then
+rc=0
+aws_sync || rc=$?
+if [ "$rc" -eq 3 ]; then
+	warn "Could not read an SSH, web or endpoint prefix list from AWS (see above), so the Fail2ban whitelist may be"
+	warn "incomplete. If this stack predates them, update it so the instance role can read them, then run: x-aws-sync"
+elif [ "$rc" -ne 0 ]; then
 	synced=false
 	warn "Could not read the prefix lists from AWS (see above). The carrier ACL feeds keep their last entries and"
 	warn "report the failure. Fix the cause (instance role, $settings), then run: x-aws-sync"
 fi
+#from whatever lists were written (the timer's unit does the same after each run)
+/usr/local/sbin/x-fail2ban-ignoreip || warn "Could not update the Fail2ban whitelist (see above)."
 
 #-------------------------------------------------------------------------------------------------------------------
 # 3. external SIP and RTP address

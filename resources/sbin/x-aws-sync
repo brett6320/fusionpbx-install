@@ -1,13 +1,16 @@
 #!/usr/bin/python3 -I
 # Read this instance's AWS settings (/etc/default/fusionpbx-aws, written by deploy/aws/fusionpbx.yaml) and write
 # the entries of the Telnyx signalling and media prefix lists to /var/lib/x_carrier_acl/aws/telnyx-*.json, where
-# the carrier ACL worker reads them as feeds (docs/design/carrier_acl.md section 13).
+# the carrier ACL worker reads them as feeds (docs/design/carrier_acl.md section 13). The optional SSH, web and
+# endpoint lists go to allow-*.json for the Fail2ban whitelist (x-fail2ban-ignoreip).
 #
-# Runs as root: credentials come from the instance role over IMDSv2. Standard library only. Either both lists are
-# read and written, or nothing is written and the last good files stay. The files are byte-stable (sorted, no
+# Runs as root: credentials come from the instance role over IMDSv2. Standard library only. Either both Telnyx lists
+# are read and written, or nothing is written and the last good files stay. Each optional list is written on its own
+# after them, so one the role cannot read (a stack older than these keys) never stops the carrier ACL. The files are byte-stable (sorted, no
 # timestamps) and only rewritten when their content changes: the worker uses the content hash for approvals.
 #
-# Usage: x-aws-sync              sync the prefix lists; exit 1 on failure, 2 on a failure no retry fixes
+# Usage: x-aws-sync              sync the prefix lists; exit 1 on failure, 2 on a failure no retry fixes, 3 when the
+#                                Telnyx lists were written but a Fail2ban whitelist list was not
 #        x-aws-sync --address    print this instance's Elastic IP if IMDS shows it is the instance and address named
 #                                in the settings file (and AWS shows the association); exit 1 otherwise
 #        x-aws-sync --check      check the settings file only (no network); exit 1 if it is missing or invalid
@@ -42,9 +45,18 @@ KEYS = {
 	'TELNYX_SIGNALLING_PREFIX_LIST_ID': r'pl-[0-9a-f]{8,17}',
 	'TELNYX_MEDIA_PREFIX_LIST_ID': r'pl-[0-9a-f]{8,17}',
 }
+#may be absent (a file written before they existed); an invalid value only skips that list (with a warning), so a
+#typo never stops the carrier ACL
+OPTIONAL_KEYS = {
+	'SSH_PREFIX_LIST_ID': r'pl-[0-9a-f]{8,17}',
+	'WEB_PREFIX_LIST_ID': r'pl-[0-9a-f]{8,17}',
+	'ENDPOINT_PREFIX_LIST_ID': r'pl-[0-9a-f]{8,17}',
+}
 #IMDS and the EC2 API are never reached through a proxy from the environment
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 LISTS = (('telnyx-signalling', 'TELNYX_SIGNALLING_PREFIX_LIST_ID'), ('telnyx-media', 'TELNYX_MEDIA_PREFIX_LIST_ID'))
+ALLOW_LISTS = (('allow-ssh', 'SSH_PREFIX_LIST_ID'), ('allow-web', 'WEB_PREFIX_LIST_ID'),
+	('allow-endpoint', 'ENDPOINT_PREFIX_LIST_ID'))
 
 
 class SyncError(Exception):
@@ -73,13 +85,17 @@ def read_settings(path):
 					continue
 				key, value = line.split('=', 1)
 				value = value.strip().strip('"\'')
-				if key in KEYS:
+				if key in KEYS or (key in OPTIONAL_KEYS and value):
 					settings[key] = value
 	except OSError as error:
 		raise SyncError('cannot read %s: %s' % (path, error))
 	for key, pattern in KEYS.items():
 		if not re.fullmatch(pattern, settings.get(key, '')):
 			raise PermanentError('%s: %s is missing or invalid' % (path, key))
+	for key, pattern in OPTIONAL_KEYS.items():
+		if key in settings and not re.fullmatch(pattern, settings[key]):
+			print('x-aws-sync: %s: %s is invalid; that list is skipped' % (path, key), file=sys.stderr)
+			settings['invalid:' + key] = settings.pop(key)
 	return settings
 
 
@@ -164,7 +180,7 @@ def ec2(settings, credentials, action, params):
 	return root
 
 
-def prefix_list(settings, credentials, list_id):
+def prefix_list(settings, credentials, list_id, allow_empty=False):
 	root = ec2(settings, credentials, 'DescribeManagedPrefixLists', {'PrefixListId.1': list_id})
 	item = root.find('prefixListSet/item')
 	if item is None:
@@ -191,7 +207,7 @@ def prefix_list(settings, credentials, list_id):
 			break
 	else:
 		raise SyncError('prefix list %s has more than %d pages of entries' % (list_id, MAX_PAGES))
-	if not entries:
+	if not entries and not allow_empty:
 		raise SyncError('prefix list %s has no entries' % list_id)
 	#keyed by network, so the feed's entry labels (entries.<cidr>.cidr) do not shift when the list changes
 	try:
@@ -278,6 +294,31 @@ def main():
 		changed = write_json(name, data)
 		print('%s: %s version %s, %d entries%s' % (name, data['prefix_list_id'], data['version'], len(data['entries']),
 			'' if changed else ' (unchanged)'))
+	#the Fail2ban whitelist lists; an empty list is valid here (it whitelists nothing)
+	failed = False
+	for name, key in ALLOW_LISTS:
+		if 'invalid:' + key in settings:
+			#keep the last good file rather than whitelist nothing because of a typo
+			failed = True
+			continue
+		if key not in settings:
+			try:
+				os.unlink(os.path.join(OUT_DIR, name + '.json'))
+				print('%s: removed (%s is not set)' % (name, key))
+			except FileNotFoundError:
+				pass
+			continue
+		try:
+			data = prefix_list(settings, credentials, settings[key], allow_empty=True)
+		except SyncError as error:
+			print('x-aws-sync: %s: %s' % (name, error), file=sys.stderr)
+			failed = True
+			continue
+		changed = write_json(name, data)
+		print('%s: %s version %s, %d entries%s' % (name, data['prefix_list_id'], data['version'], len(data['entries']),
+			'' if changed else ' (unchanged)'))
+	if failed:
+		sys.exit(3)
 
 
 if __name__ == '__main__':

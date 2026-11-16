@@ -10,3 +10,14 @@ dir=/var/lib/x_carrier_acl/aws
 printf '%s\n' '{"entries":{"192.76.120.10/32":{"cidr":"192.76.120.10/32","description":"US primary"},"64.16.250.10/32":{"cidr":"64.16.250.10/32","description":"US secondary"}},"name":"telnyx-signalling","prefix_list_id":"pl-0123456789abcdef0","version":"1"}' > "$dir/telnyx-signalling.json"
 printf '%s\n' '{"entries":{"50.114.144.0/21":{"cidr":"50.114.144.0/21","description":"media"},"64.16.226.0/24":{"cidr":"64.16.226.0/24","description":"media"}},"name":"telnyx-media","prefix_list_id":"pl-0fedcba9876543210","version":"1"}' > "$dir/telnyx-media.json"
 chmod 0644 "$dir"/telnyx-*.json
+#whitelist lists only for the keys present in the settings file, like x-aws-sync
+for list in ssh:SSH:198.51.100.0/24 web:WEB:203.0.113.64/26 endpoint:ENDPOINT:192.0.2.0/24; do
+	IFS=: read -r name key cidr <<<"$list"
+	if grep -q "^${key}_PREFIX_LIST_ID=" /etc/default/fusionpbx-aws; then
+		printf '{"entries":{"%s":{"cidr":"%s","description":"%s"}},"name":"%s","prefix_list_id":"pl-0aaaaaaaaaaaaaaa1","version":"1"}\n' \
+			"$cidr" "$cidr" "$name" "$name" > "$dir/allow-$name.json"
+		chmod 0644 "$dir/allow-$name.json"
+	else
+		rm -f "$dir/allow-$name.json"
+	fi
+done

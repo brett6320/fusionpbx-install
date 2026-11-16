@@ -135,10 +135,13 @@ same works for `prefix-lists.yaml`, and for a customized copy of
 - **Instance settings:** on first boot, user data writes
   `/etc/default/fusionpbx-aws` (shell `KEY=value`, world-readable, no
   secrets) with `AWS_REGION`, `AWS_STACK_NAME`, `INSTANCE_ID`, `ELASTIC_IP`,
-  `ELASTIC_IP_ALLOCATION_ID`, `TELNYX_SIGNALLING_PREFIX_LIST_ID` and
-  `TELNYX_MEDIA_PREFIX_LIST_ID`, so the application can build carrier ACLs
-  and set its SIP addresses (see `fusionpbx-aws.example`). The instance role can read the entries of those
-  two lists only (`aws ec2 get-managed-prefix-list-entries --prefix-list-id
+  `ELASTIC_IP_ALLOCATION_ID`, `TELNYX_SIGNALLING_PREFIX_LIST_ID`,
+  `TELNYX_MEDIA_PREFIX_LIST_ID`, `SSH_PREFIX_LIST_ID`, `WEB_PREFIX_LIST_ID`
+  and `ENDPOINT_PREFIX_LIST_ID`, so the application can build carrier ACLs,
+  set its SIP addresses and keep Fail2ban from banning addresses in the SSH,
+  web and endpoint lists (see `fusionpbx-aws.example`). The instance role can
+  read the entries of those five lists only (`aws ec2
+  get-managed-prefix-list-entries --prefix-list-id
   "$TELNYX_MEDIA_PREFIX_LIST_ID"`), and describe the Elastic IP.
   `DescribeAddresses` and `DescribeManagedPrefixLists` can't be limited to
   one resource in IAM, so the role can list all addresses and prefix lists
@@ -146,12 +149,18 @@ same works for `prefix-lists.yaml`, and for a customized copy of
   - The file is written once. Changing a Telnyx prefix list parameter
     later restarts the instance (dropping calls) but doesn't update the
     file, and the role then can't read the old lists (AccessDenied); edit
-    the file by hand. The list IDs stay the same when you
+    the file by hand. The same applies to the SSH, web and endpoint list
+    parameters. The list IDs stay the same when you
     change a list's entries, so a re-read of the entries picks up Telnyx
     changes.
   - An instance created before this change doesn't get the file: the update
     restarts it (user data changed) but doesn't run user data again. Write
     the file by hand from the stack's parameters and outputs.
+  - An instance whose file predates `SSH_PREFIX_LIST_ID`,
+    `WEB_PREFIX_LIST_ID` and `ENDPOINT_PREFIX_LIST_ID` keeps working without
+    them (no Fail2ban whitelist). After the stack update (which gives the role
+    access, and restarts the instance), add the three lines to the file by
+    hand from the stack's parameters.
 - **Backups** go to the bucket in the `BackupBucketName` output. The bucket is
   private, encrypted and versioned, and only accepts HTTPS.
   - The bucket is write-once (WORM) for the instance: it can create new
