@@ -21,4 +21,7 @@ find apps resources -path '*/sbin/*' -type f | while read -r f; do
 	fi
 done || status=1
 
+echo "== x-aws-sync request signing"
+docker run --rm -v "$PWD:/src:ro" -w /src python:3-slim python -I resources/sbin/x-aws-sync --self-test || status=1
+
 exit $status

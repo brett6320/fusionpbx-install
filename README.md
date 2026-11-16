@@ -96,6 +96,34 @@ generated gateway XML and FusionPBX's transaction log. The keys are in
 `/var/backups/x_carriers-keys`. Back up both with the database. Without the
 keys, the stored credentials cannot be recovered.
 
+## AWS instance settings
+
+If `/etc/default/fusionpbx-aws` exists (user data from the AWS template writes
+it), `install.sh` and `upgrade.sh` also configure the host from AWS. The
+instance role must be able to read the two Telnyx prefix lists and describe the
+Elastic IP; the template grants this.
+
+- **External address.** EC2 uses 1:1 NAT, so FreeSWITCH must advertise the
+  Elastic IP. The installer sets the `external_sip_ip` and `external_rtp_ip`
+  variables to it (Advanced > Variables), regenerates `vars.xml` from them, and
+  checks the file. It does this only when instance metadata and AWS both show
+  that this instance holds the address named in the file, so a restored or
+  cloned disk never takes production's address. A value an admin set by hand is
+  kept. On install, FreeSWITCH restarts to pick it up. If an upgrade changes
+  it, the upgrade tells you to restart FreeSWITCH when no calls are up.
+- **Carrier ACL.** The Telnyx signalling and media prefix lists become two
+  carrier ACL feeds (Advanced > Carrier ACL). `x-aws-sync` reads them from AWS
+  every hour (`x-aws-sync.timer`), and the worker applies changes as for any
+  feed, including the approval thresholds. On install, the first run of each
+  feed is approved automatically, because the security groups already allow
+  exactly these addresses. A broad prefix still waits for approval. The feeds
+  are created once: a feed you delete stays deleted.
+- If AWS can't be reached during install, the install continues with a
+  warning. The feeds then report the failure. Fix the cause and run
+  `x-aws-sync`.
+- Telnyx must also know the Elastic IP: add it to the IP authentication of
+  your Telnyx connection.
+
 ## Testing
 
 ```sh
