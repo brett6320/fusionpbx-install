@@ -46,6 +46,7 @@ class x_ivr_manager {
 	public $domain_name;
 	public $message;
 	public $number_used_by;
+	public $usage = [];
 
 	/**
 	 * declare private variables
@@ -175,6 +176,193 @@ class x_ivr_manager {
 
 		$this->clear_ivr_cache($ivr_menu);
 		return $result !== false;
+	}
+
+	/**
+	 * What still plays a recording or phrase of the domain. A recording is found by its file name and a phrase by
+	 * its uuid, as a substring, so every stored form matches (bare name, full path, "lua streamfile.lua name",
+	 * "playback path", "phrase:uuid", "phrase uuid", dialplan data="uuid"). A similar name can refuse a delete;
+	 * nothing in use is missed in the places checked:
+	 * IVR menus and their options, phrases, ring groups, call center queues, call flows, conference centers and
+	 * dialplans of the domain.
+	 *
+	 * @param string $value recording file name, or phrase:<uuid>
+	 * @return array|false what uses it (empty when unused), false when a lookup failed
+	 */
+	public function greeting_usage($value) {
+		$value = (string)$value;
+		$needle = strpos($value, 'phrase:') === 0 ? substr($value, 7) : $value;
+		if ($needle === '') {
+			return false;
+		}
+		$like = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], $needle).'%';
+		$match = function(array $columns) {
+			return '('.implode(' or ', array_map(function($column) { return $column." like :like escape '!'"; }, $columns)).')';
+		};
+
+		//label, app directory (null: always installed), query
+		$checks = [];
+		$checks[] = ['IVR menu', 'ivr_menus', "select ivr_menu_name from v_ivr_menus where domain_uuid = :domain_uuid and ".$match(['ivr_menu_greet_long', 'ivr_menu_greet_short', 'ivr_menu_invalid_sound', 'ivr_menu_exit_sound', 'ivr_menu_ringback'])];
+		$checks[] = ['IVR menu option of', 'ivr_menus', "select m.ivr_menu_name from v_ivr_menu_options as o, v_ivr_menus as m where m.domain_uuid = :domain_uuid and o.ivr_menu_uuid = m.ivr_menu_uuid and ".$match(['o.ivr_menu_option_param'])];
+		if (strpos($value, 'phrase:') !== 0) {
+			$checks[] = ['Phrase', 'phrases', "select distinct p.phrase_name from v_phrases as p, v_phrase_details as d where p.domain_uuid = :domain_uuid and d.phrase_uuid = p.phrase_uuid and ".$match(['d.phrase_detail_data'])];
+		}
+		$checks[] = ['Ring group', 'ring_groups', "select ring_group_name from v_ring_groups where domain_uuid = :domain_uuid and ".$match(['ring_group_greeting', 'ring_group_ringback', 'ring_group_wait_announcement'])];
+		$checks[] = ['Call center queue', 'call_centers', "select queue_name from v_call_center_queues where domain_uuid = :domain_uuid and ".$match(['queue_greeting', 'queue_announce_sound', 'queue_moh_sound'])];
+		$checks[] = ['Call flow', 'call_flows', "select call_flow_name from v_call_flows where domain_uuid = :domain_uuid and ".$match(['call_flow_sound', 'call_flow_alternate_sound'])];
+		$checks[] = ['Conference center', 'conference_centers', "select conference_center_name from v_conference_centers where domain_uuid = :domain_uuid and ".$match(['conference_center_greeting'])];
+		$checks[] = ['Dialplan', null, "select dialplan_name from v_dialplans where domain_uuid = :domain_uuid and ".$match(['dialplan_xml'])];
+
+		$app_path = dirname(__DIR__, 4).'/app';
+		$usage = [];
+		foreach ($checks as [$label, $app, $sql]) {
+			if ($app !== null && !file_exists($app_path.'/'.$app.'/app_config.php')) {
+				continue;
+			}
+			$rows = $this->database->select($sql, ['domain_uuid' => $this->domain_uuid, 'like' => $like], 'all');
+			if ($rows === false) {
+				return false;
+			}
+			foreach (is_array($rows) ? $rows : [] as $row) {
+				$usage[] = $label.' '.reset($row);
+			}
+		}
+		return array_values(array_unique($usage));
+	}
+
+	/**
+	 * Take a greeting off the menu; the recording or phrase is kept
+	 *
+	 * @param array $ivr_menu the ivr menu row
+	 * @param string $type greet_long or greet_short
+	 * @return bool
+	 */
+	public function remove_greeting(array $ivr_menu, $type) {
+		return $this->set_greeting($ivr_menu, $type, '');
+	}
+
+	/**
+	 * Delete a recording or phrase of the domain, only when nothing uses it. Deleting a phrase can also delete the
+	 * recordings created with it (description "Phrase <name>") that nothing else uses.
+	 * The caller checks recording_delete or phrase_delete.
+	 *
+	 * @param string $value recording file name, or phrase:<uuid>
+	 * @param bool $delete_recordings also delete a phrase's own recordings; the caller checked recording_delete
+	 * @return bool
+	 */
+	public function delete_greeting($value, $delete_recordings = false) {
+		$this->message = null;
+		$this->usage = [];
+		$value = (string)$value;
+
+		//phrase
+		if (strpos($value, 'phrase:') === 0) {
+			$phrase = $this->get_phrase(substr($value, 7));
+			if ($phrase === null) {
+				$this->message = 'message-greeting_invalid';
+				return false;
+			}
+			$usage = $this->greeting_usage($value);
+			if ($usage !== []) {
+				$this->usage = $usage === false ? [] : $usage;
+				$this->message = $usage === false ? 'message-greeting_delete_failed' : 'message-greeting_in_use';
+				return false;
+			}
+
+			//the recordings it plays, to delete with it when they were created for it
+			$sql = "select phrase_detail_data from v_phrase_details ";
+			$sql .= "where domain_uuid = :domain_uuid and phrase_uuid = :phrase_uuid and phrase_detail_function = 'play-file' ";
+			$parameters['domain_uuid'] = $this->domain_uuid;
+			$parameters['phrase_uuid'] = $phrase['phrase_uuid'];
+			$details = $this->database->select($sql, $parameters, 'all');
+			unset($sql, $parameters);
+			$files = [];
+			foreach (is_array($details) ? $details : [] as $row) {
+				$data = trim((string)$row['phrase_detail_data']);
+				$file = preg_match('/^\$?\{lua streamfile\.lua (.+)\}$/', $data, $matches) ? trim($matches[1]) : $data;
+				if (strpos($file, '/') === false || dirname($file) === $this->recording_path() || dirname($file) === 'recordings/'.$this->domain_name) {
+					$files[] = basename($file);
+				}
+			}
+
+			//delete the phrase, mirrors app/phrases/resources/classes/phrases.php delete()
+			$array['phrases'][0]['phrase_uuid'] = $phrase['phrase_uuid'];
+			$array['phrases'][0]['domain_uuid'] = $this->domain_uuid;
+			$array['phrase_details'][0]['phrase_uuid'] = $phrase['phrase_uuid'];
+			$array['phrase_details'][0]['domain_uuid'] = $this->domain_uuid;
+			$p = permissions::new();
+			$p->add('phrase_detail_delete', 'temp');
+			$this->database->delete($array);
+			$p->delete('phrase_detail_delete', 'temp');
+			unset($array);
+			if ($this->get_phrase($phrase['phrase_uuid']) !== null) {
+				$this->message = 'message-greeting_delete_failed';
+				return false;
+			}
+			$cache = new cache;
+			$cache->delete('languages:'.$phrase['phrase_language']);
+			$cache->delete('languages:'.$phrase['phrase_language'].':'.$phrase['phrase_uuid']);
+
+			//its own recordings, when nothing else plays them
+			foreach ($delete_recordings ? array_unique($files) : [] as $file) {
+				$sql = "select recording_description from v_recordings where domain_uuid = :domain_uuid and recording_filename = :recording_filename ";
+				$parameters['domain_uuid'] = $this->domain_uuid;
+				$parameters['recording_filename'] = $file;
+				$description = $this->database->select($sql, $parameters, 'column');
+				unset($sql, $parameters);
+				if ($description === 'Phrase '.$phrase['phrase_name'] && $this->greeting_usage($file) === []) {
+					$this->delete_recording($file);
+				}
+			}
+			unset($_SESSION['destinations']['array']);
+			return true;
+		}
+
+		//recording
+		$usage = $this->greeting_usage($value);
+		if ($usage !== []) {
+			$this->usage = $usage === false ? [] : $usage;
+			$this->message = $usage === false ? 'message-greeting_delete_failed' : 'message-greeting_in_use';
+			return false;
+		}
+		if (!$this->delete_recording($value)) {
+			$this->message = $this->message ?? 'message-greeting_delete_failed';
+			return false;
+		}
+		unset($_SESSION['destinations']['array']);
+		return true;
+	}
+
+	/**
+	 * Delete a recording row and its file, mirrors app/recordings/resources/classes/switch_recordings.php delete();
+	 * the caller checked recording_delete
+	 *
+	 * @param string $filename recording file name of the domain
+	 * @return bool
+	 */
+	private function delete_recording($filename) {
+		$sql = "select recording_uuid from v_recordings where domain_uuid = :domain_uuid and recording_filename = :recording_filename ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['recording_filename'] = $filename;
+		$recording_uuid = $this->database->select($sql, $parameters, 'column');
+		unset($sql, $parameters);
+		if (!is_uuid($recording_uuid)) {
+			$this->message = 'message-greeting_invalid';
+			return false;
+		}
+		$array['recordings'][0]['recording_uuid'] = $recording_uuid;
+		$array['recordings'][0]['domain_uuid'] = $this->domain_uuid;
+		$this->database->delete($array);
+		unset($array);
+		$sql = "select count(*) from v_recordings where recording_uuid = :recording_uuid ";
+		if ((int)$this->database->select($sql, ['recording_uuid' => $recording_uuid], 'column') !== 0) {
+			return false;
+		}
+		$path = $this->recording_path().'/'.basename($filename);
+		if (basename($filename) === $filename && file_exists($path)) {
+			@unlink($path);
+		}
+		return true;
 	}
 
 	/**

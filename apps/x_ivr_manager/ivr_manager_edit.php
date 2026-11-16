@@ -181,6 +181,41 @@
 				header('Location: '.$redirect);
 				exit;
 
+			//take a greeting off the menu, the recording or phrase is kept
+			case 'greeting_remove':
+				if (!permission_exists('x_ivr_manager_edit')) {
+					echo "access denied";
+					exit;
+				}
+				if ($manager->remove_greeting($ivr_menu, $greeting_type)) {
+					message::add($text['message-greeting_removed']);
+				}
+				else {
+					message::add($text['message-failed'], 'negative');
+				}
+				header('Location: '.$redirect);
+				exit;
+
+			//delete a recording or phrase, refused while anything uses it
+			case 'greeting_delete':
+				$greeting_value = (string)($_POST['greeting_value'] ?? '');
+				$delete_permission = strpos($greeting_value, 'phrase:') === 0 ? 'phrase_delete' : 'recording_delete';
+				if (!permission_exists('x_ivr_manager_edit') || !permission_exists($delete_permission)) {
+					echo "access denied";
+					exit;
+				}
+				if ($manager->delete_greeting($greeting_value, permission_exists('recording_delete'))) {
+					message::add($text['message-greeting_deleted']);
+				}
+				else if ($manager->message === 'message-greeting_in_use') {
+					message::add(sprintf($text['message-greeting_in_use'], implode(', ', array_slice($manager->usage, 0, 10)).(count($manager->usage) > 10 ? ', …' : '')), 'negative');
+				}
+				else {
+					message::add((is_string($manager->message) ? ($text[$manager->message] ?? null) : null) ?? $text['message-failed'], 'negative');
+				}
+				header('Location: '.$redirect);
+				exit;
+
 			//create a phrase with Google Text-to-Speech
 			case 'phrase_create':
 				if (!$phrase_enabled) {
@@ -510,10 +545,22 @@
 		if (!empty($preview) && empty($preview['complete'])) {
 			echo "	<br />".$text['description-preview_incomplete']."\n";
 		}
+		if (!empty($greetings[$type]['value']) && permission_exists('x_ivr_manager_edit')) {
+			echo "	<div style='margin-top: 5px;'>".button::create(['type'=>'button','label'=>$text['button-remove_greeting'],'icon'=>'xmark','onclick'=>"greeting_remove_confirm('".$type."', ".escape(json_encode($greetings[$type]['label'], JSON_INVALID_UTF8_SUBSTITUTE)).");"])."</div>\n";
+		}
 		echo "</td>\n";
 		echo "</tr>\n";
 	}
 	echo "</table>\n";
+	if (permission_exists('x_ivr_manager_edit')) {
+		echo "<form name='frm_greeting_remove' id='frm_greeting_remove' method='post'>\n";
+		echo "<input type='hidden' name='action' value='greeting_remove'>\n";
+		echo "<input type='hidden' name='greeting_type' id='greeting_remove_type' value=''>\n";
+		echo "<input type='hidden' name='id' value='".escape($ivr_menu_uuid)."'>\n";
+		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+		echo "</form>\n";
+		echo modal::create(['id'=>'modal-greeting-remove','type'=>'general','message'=>"<span id='greeting_remove_message'></span>",'actions'=>button::create(['type'=>'button','label'=>$text['button-continue'],'icon'=>'check','style'=>'float: right; margin-left: 15px;','collapse'=>'never','onclick'=>"modal_close(); document.getElementById('frm_greeting_remove').submit();"])]);
+	}
 
 	//target select, shared by the recorder and text to speech forms
 	$greeting_type_select = function($id) use ($text) {
@@ -542,7 +589,7 @@
 		if (!empty($domain_recordings)) {
 			echo "		<optgroup label=\"".escape($text['label-recordings'])."\">\n";
 			foreach ($domain_recordings as $row) {
-				echo "			<option value=\"".escape($row['recording_filename'])."\"".$preview_attribute($previews[$row['recording_filename']] ?? null).">".escape($row['recording_name'])."</option>\n";
+				echo "			<option value=\"".escape($row['recording_filename'])."\"".$preview_attribute($previews[$row['recording_filename']] ?? null).(permission_exists('recording_delete') ? " data-deletable='true'" : '').">".escape($row['recording_name'])."</option>\n";
 			}
 			echo "		</optgroup>\n";
 		}
@@ -550,7 +597,7 @@
 			echo "		<optgroup label=\"".escape($text['label-phrases'])."\">\n";
 			foreach ($domain_phrases as $row) {
 				$phrase_disabled = !($row['phrase_enabled'] === true || $row['phrase_enabled'] === 'true' || $row['phrase_enabled'] === 1 || $row['phrase_enabled'] === '1');
-				echo "			<option value=\"phrase:".escape($row['phrase_uuid'])."\"".$preview_attribute($previews['phrase:'.$row['phrase_uuid']] ?? null).">".escape($row['phrase_name'].' ('.$row['phrase_language'].')'.($phrase_disabled ? ' - '.$text['label-disabled'] : ''))."</option>\n";
+				echo "			<option value=\"phrase:".escape($row['phrase_uuid'])."\"".$preview_attribute($previews['phrase:'.$row['phrase_uuid']] ?? null).(permission_exists('phrase_delete') ? " data-deletable='true'" : '').">".escape($row['phrase_name'].' ('.$row['phrase_language'].')'.($phrase_disabled ? ' - '.$text['label-disabled'] : ''))."</option>\n";
 			}
 			echo "		</optgroup>\n";
 		}
@@ -565,6 +612,7 @@
 		echo "	</div>\n";
 		echo "	<br />".$text['description-select_greeting']."<br />\n";
 		echo button::create(['type'=>'submit','label'=>$text['button-set_greeting'],'icon'=>$settings->get('theme', 'button_icon_save'),'id'=>'btn_greeting_select','style'=>'margin-top: 5px;']);
+		echo button::create(['type'=>'button','label'=>$text['button-delete_greeting'],'icon'=>$settings->get('theme', 'button_icon_delete'),'id'=>'btn_greeting_delete','style'=>'display: none; margin-top: 5px; margin-left: 15px;','onclick'=>'greeting_delete_confirm();']);
 		echo "</td>\n";
 		echo "</tr>\n";
 		echo "</table>\n";
@@ -572,6 +620,13 @@
 		echo "<input type='hidden' name='id' value='".escape($ivr_menu_uuid)."'>\n";
 		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
 		echo "</form>\n";
+		echo "<form name='frm_greeting_delete' id='frm_greeting_delete' method='post'>\n";
+		echo "<input type='hidden' name='action' value='greeting_delete'>\n";
+		echo "<input type='hidden' name='greeting_value' id='greeting_delete_value' value=''>\n";
+		echo "<input type='hidden' name='id' value='".escape($ivr_menu_uuid)."'>\n";
+		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+		echo "</form>\n";
+		echo modal::create(['id'=>'modal-greeting-delete','type'=>'general','message'=>"<span id='greeting_delete_message'></span>",'actions'=>button::create(['type'=>'button','label'=>$text['button-continue'],'icon'=>'check','style'=>'float: right; margin-left: 15px;','collapse'=>'never','onclick'=>"modal_close(); greeting_delete_submit();"])]);
 	}
 
 	//new phrase with google text to speech
@@ -1087,7 +1142,27 @@
 	echo "		player.querySelector('.greeting_incomplete').style.display = preview && !preview.complete ? '' : 'none';\n";
 	echo "		text.querySelector('textarea').value = preview ? preview.text : '';\n";
 	echo "		text.style.display = preview && preview.text ? '' : 'none';\n";
+	echo "		var delete_button = document.getElementById('btn_greeting_delete');\n";
+	echo "		if (delete_button) { delete_button.style.display = option && option.value && option.dataset.deletable === 'true' ? '' : 'none'; }\n";
 	echo "	}\n";
+	echo "	function greeting_remove_confirm(type, label) {\n";
+	echo "		document.getElementById('greeting_remove_type').value = type;\n";
+	echo "		document.getElementById('greeting_remove_message').textContent = ".json_encode($text['confirm-greeting_remove']).".replace('%s', function() { return label; });\n";
+	echo "		modal_open('modal-greeting-remove');\n";
+	echo "	}\n";
+	echo "	function greeting_delete_confirm() {\n";
+	echo "		var select = document.getElementById('greeting_value');\n";
+	echo "		var option = select.options[select.selectedIndex];\n";
+	echo "		if (!option || !option.value) { return; }\n";
+	echo "		document.getElementById('greeting_delete_value').value = option.value;\n";
+	echo "		document.getElementById('greeting_delete_message').textContent = (option.value.indexOf('phrase:') === 0 ? ".json_encode($text['confirm-phrase_delete'])." : ".json_encode($text['confirm-recording_delete']).").replace('%s', function() { return option.text; });\n";
+	echo "		modal_open('modal-greeting-delete');\n";
+	echo "	}\n";
+	echo "	function greeting_delete_submit() {\n";
+	echo "		var value = document.getElementById('greeting_delete_value').value;\n";
+	echo "		if (value) { document.getElementById('frm_greeting_delete').submit(); }\n";
+	echo "	}\n";
+	echo "	window.addEventListener('pageshow', function() { if (document.getElementById('greeting_value')) { greeting_select_changed(); } });\n";
 	echo "</script>\n";
 
 //include the footer
