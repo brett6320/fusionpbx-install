@@ -240,7 +240,12 @@
 				}
 				//show the form again with the posted values
 				$error_key = is_string($manager->message) ? $manager->message : '';
-				message::add($text[$error_key] ?? $text['message-failed'], 'negative');
+				if ($error_key === 'message-schedule_number_in_use') {
+					message::add(sprintf($text[$error_key], $schedule_form['dialplan_number'], $manager->number_used_by), 'negative');
+				}
+				else {
+					message::add($text[$error_key] ?? $text['message-failed'], 'negative');
+				}
 				unset($error_key);
 				unset($schedule_array);
 				break;
@@ -277,19 +282,25 @@
 		}
 	}
 
-//build the greeting playback links, playback goes through app/recordings/recordings.php
+//playback and text of the current greetings and the picker; playback goes through app/recordings/recordings.php,
 //which applies its own recording_play / recording_download permission and domain checks
 	$can_play = permission_exists('recording_play') || permission_exists('recording_download');
 	$recording_path = $manager->recording_path();
+	$previews = $manager->greeting_previews($can_play);
 	$greetings = [];
 	foreach (['greet_long', 'greet_short'] as $type) {
 		$value = $ivr_menu['ivr_menu_'.$type] ?? '';
 		$greetings[$type]['value'] = $value;
 		$greetings[$type]['play_url'] = '';
-		if (!$can_play || empty($value)) {
+		$greetings[$type]['preview'] = null;
+		if (empty($value)) {
 			continue;
 		}
-		//only bare file names or files directly inside the domain recordings directory
+		//phrases, bare file names, or files directly inside the domain recordings directory
+		if (strpos($value, 'phrase:') === 0) {
+			$greetings[$type]['preview'] = $previews[$value] ?? null;
+			continue;
+		}
 		if ($value === basename($value)) {
 			$filename = $value;
 		}
@@ -299,19 +310,12 @@
 		else {
 			continue;
 		}
-		$sql = "select recording_uuid from v_recordings ";
-		$sql .= "where domain_uuid = :domain_uuid ";
-		$sql .= "and recording_filename = :recording_filename ";
-		$parameters['domain_uuid'] = $domain_uuid;
-		$parameters['recording_filename'] = $filename;
-		$recording_uuid = $database->select($sql, $parameters, 'column');
-		unset($sql, $parameters);
-		if (is_uuid($recording_uuid)) {
-			$greetings[$type]['play_url'] = '../recordings/recordings.php?action=download&type=rec&id='.urlencode($recording_uuid);
+		$preview = $previews[$filename] ?? null;
+		if ($preview === null && $can_play && file_exists($recording_path.'/'.$filename)) {
+			$preview = ['steps' => [['url' => '../recordings/recordings.php?action=download&type=rec&filename='.urlencode($filename)]], 'text' => '', 'complete' => true];
 		}
-		else if (file_exists($recording_path.'/'.$filename)) {
-			$greetings[$type]['play_url'] = '../recordings/recordings.php?action=download&type=rec&filename='.urlencode($filename);
-		}
+		$greetings[$type]['preview'] = $preview;
+		$greetings[$type]['play_url'] = $preview['steps'][0]['url'] ?? '';
 	}
 
 //recordings and phrases for the greeting picker, and phrase names for the current greetings
@@ -329,6 +333,14 @@
 		}
 	}
 
+//a preview as a data attribute for the player and the text box
+	$preview_attribute = function($preview) {
+		if (empty($preview)) {
+			return '';
+		}
+		return " data-preview=\"".escape(json_encode(['steps' => $preview['steps'], 'text' => $preview['text'], 'complete' => $preview['complete']], JSON_INVALID_UTF8_SUBSTITUTE))."\"";
+	};
+
 //google voices for new phrases, the configured default first
 	if ($phrase_enabled) {
 		$phrase_voices = $google_tts->voices();
@@ -344,7 +356,7 @@
 		$schedule = $manager->get_schedule($ivr_menu);
 		if (!isset($schedule_form)) {
 			$schedule_form['dialplan_name'] = $schedule['dialplan_name'] ?? $ivr_menu['ivr_menu_name'].' Schedule';
-			$schedule_form['dialplan_number'] = $schedule['dialplan_number'] ?? '';
+			$schedule_form['dialplan_number'] = $schedule['dialplan_number'] ?? $manager->suggest_schedule_number();
 			$schedule_form['start_date'] = !empty($schedule['start']) ? substr($schedule['start'], 0, 10) : '';
 			$schedule_form['start_time'] = !empty($schedule['start']) ? substr($schedule['start'], 11, 5) : '';
 			$schedule_form['stop_date'] = !empty($schedule['stop']) ? substr($schedule['stop'], 0, 10) : '';
@@ -368,6 +380,7 @@
 			}
 		}
 
+		$schedule_routes = !empty($schedule) ? $manager->schedule_inbound_routes($schedule) : [];
 		$destination = new destinations;
 	}
 
@@ -479,8 +492,23 @@
 		echo "<td width='30%' class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-'.$type]."</td>\n";
 		echo "<td width='70%' class='vtable' align='left'>\n";
 		echo "	".escape(!empty($greetings[$type]['label']) ? $greetings[$type]['label'] : $text['label-not_set'])."\n";
+		$preview = $greetings[$type]['preview'];
 		if (!empty($greetings[$type]['play_url'])) {
 			echo "	<br /><audio controls preload='none' src='".escape($greetings[$type]['play_url'])."' style='margin-top: 5px; max-width: 100%;'></audio>\n";
+		}
+		else if (!empty($preview['steps'])) {
+			echo "	<div class='greeting_preview'".$preview_attribute($preview)." style='margin-top: 5px;'>\n";
+			echo button::create(['type'=>'button','label'=>$text['button-play'],'icon'=>'play','onclick'=>'greeting_play(this);']);
+			echo "	</div>\n";
+		}
+		if (isset($preview['text']) && $preview['text'] !== '') {
+			echo "	<div class='greeting_text' style='margin-top: 5px;'>\n";
+			echo "		<textarea class='formfld' readonly='readonly' rows='".min(max(substr_count($preview['text'], "\n") + 1, 2), 8)."' style='width: 100%; max-width: 500px;'>".escape($preview['text'])."</textarea><br />\n";
+			echo button::create(['type'=>'button','label'=>$text['button-copy_text'],'icon'=>'copy','onclick'=>'greeting_copy(this);']);
+			echo "	</div>\n";
+		}
+		if (!empty($preview) && empty($preview['complete'])) {
+			echo "	<br />".$text['description-preview_incomplete']."\n";
 		}
 		echo "</td>\n";
 		echo "</tr>\n";
@@ -509,12 +537,12 @@
 		echo "<tr>\n";
 		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-greeting']."</td>\n";
 		echo "<td class='vtable' align='left'>\n";
-		echo "	<select class='formfld' name='greeting_value' required='required'>\n";
+		echo "	<select class='formfld' name='greeting_value' id='greeting_value' required='required' onchange='greeting_select_changed();'>\n";
 		echo "		<option value=''></option>\n";
 		if (!empty($domain_recordings)) {
 			echo "		<optgroup label=\"".escape($text['label-recordings'])."\">\n";
 			foreach ($domain_recordings as $row) {
-				echo "			<option value=\"".escape($row['recording_filename'])."\">".escape($row['recording_name'])."</option>\n";
+				echo "			<option value=\"".escape($row['recording_filename'])."\"".$preview_attribute($previews[$row['recording_filename']] ?? null).">".escape($row['recording_name'])."</option>\n";
 			}
 			echo "		</optgroup>\n";
 		}
@@ -522,11 +550,19 @@
 			echo "		<optgroup label=\"".escape($text['label-phrases'])."\">\n";
 			foreach ($domain_phrases as $row) {
 				$phrase_disabled = !($row['phrase_enabled'] === true || $row['phrase_enabled'] === 'true' || $row['phrase_enabled'] === 1 || $row['phrase_enabled'] === '1');
-				echo "			<option value=\"phrase:".escape($row['phrase_uuid'])."\">".escape($row['phrase_name'].' ('.$row['phrase_language'].')'.($phrase_disabled ? ' - '.$text['label-disabled'] : ''))."</option>\n";
+				echo "			<option value=\"phrase:".escape($row['phrase_uuid'])."\"".$preview_attribute($previews['phrase:'.$row['phrase_uuid']] ?? null).">".escape($row['phrase_name'].' ('.$row['phrase_language'].')'.($phrase_disabled ? ' - '.$text['label-disabled'] : ''))."</option>\n";
 			}
 			echo "		</optgroup>\n";
 		}
 		echo "	</select>\n";
+		echo "	<div id='greeting_select_preview' class='greeting_preview' style='display: none; margin-top: 5px;'>\n";
+		echo button::create(['type'=>'button','label'=>$text['button-play'],'icon'=>'play','onclick'=>'greeting_play(this);']);
+		echo "		<span class='greeting_incomplete' style='display: none; margin-left: 10px;'>".$text['description-preview_incomplete']."</span>\n";
+		echo "	</div>\n";
+		echo "	<div id='greeting_select_text' class='greeting_text' style='display: none; margin-top: 5px;'>\n";
+		echo "		<textarea class='formfld' readonly='readonly' rows='4' style='width: 100%; max-width: 500px;'></textarea><br />\n";
+		echo button::create(['type'=>'button','label'=>$text['button-copy_text'],'icon'=>'copy','onclick'=>'greeting_copy(this);']);
+		echo "	</div>\n";
 		echo "	<br />".$text['description-select_greeting']."<br />\n";
 		echo button::create(['type'=>'submit','label'=>$text['button-set_greeting'],'icon'=>$settings->get('theme', 'button_icon_save'),'id'=>'btn_greeting_select','style'=>'margin-top: 5px;']);
 		echo "</td>\n";
@@ -561,7 +597,7 @@
 		echo "</tr>\n";
 		echo "<tr>\n";
 		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-phrase_name']."</td>\n";
-		echo "<td class='vtable' align='left'><input class='formfld' type='text' name='phrase_name' maxlength='255' value=\"".escape(str_replace(' ', '_', $ivr_menu['ivr_menu_name']).'_greeting')."\" required='required'></td>\n";
+		echo "<td class='vtable' align='left'><input class='formfld' type='text' name='phrase_name' maxlength='255' value=\"".escape($manager->phrase_default_name($ivr_menu))."\" required='required'></td>\n";
 		echo "</tr>\n";
 		echo "<tr>\n";
 		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-voice']."</td>\n";
@@ -659,7 +695,7 @@
 		echo "</tr>\n";
 		echo "<tr>\n";
 		echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-recording_name']."</td>\n";
-		echo "<td class='vtable' align='left'><input class='formfld' type='text' id='recorder_recording_name' maxlength='255' value=''></td>\n";
+		echo "<td class='vtable' align='left'><input class='formfld' type='text' id='recorder_recording_name' maxlength='255' value='' placeholder=\"".escape($text['placeholder-greeting_name'])."\"></td>\n";
 		echo "</tr>\n";
 		echo "<tr>\n";
 		echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-recording']."</td>\n";
@@ -688,7 +724,7 @@
 		echo "</tr>\n";
 		echo "<tr>\n";
 		echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-recording_name']."</td>\n";
-		echo "<td class='vtable' align='left'><input class='formfld' type='text' name='recording_name' maxlength='255' value=''></td>\n";
+		echo "<td class='vtable' align='left'><input class='formfld' type='text' name='recording_name' maxlength='255' value='' placeholder=\"".escape($text['placeholder-greeting_name'])."\"></td>\n";
 		echo "</tr>\n";
 		echo "<tr>\n";
 		echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-voice']."</td>\n";
@@ -778,6 +814,19 @@
 		echo "<td class='vtable' align='left'>\n";
 		echo "	<input class='formfld' type='text' name='dialplan_number' maxlength='20' pattern='[0-9]+' inputmode='numeric' value=\"".escape($schedule_form['dialplan_number'])."\" required='required'>\n";
 		echo "	<br />".$text['description-schedule_number']."\n";
+		if (!empty($schedule)) {
+			echo "	<br /><br /><b>".$text['label-schedule_routes']."</b> ";
+			if (!empty($schedule_routes)) {
+				$route_labels = [];
+				foreach ($schedule_routes as $route) {
+					$route_labels[] = escape($route['destination_number'].(!empty($route['destination_description']) ? ' ('.$route['destination_description'].')' : ''));
+				}
+				echo implode(', ', $route_labels)."\n";
+			}
+			else {
+				echo $text['label-schedule_routes_none']."\n";
+			}
+		}
 		echo "</td>\n";
 		echo "</tr>\n";
 		echo "<tr>\n";
@@ -981,6 +1030,65 @@
 		echo "	}\n";
 		echo "</script>\n";
 	}
+
+//greeting playback (a phrase plays its recordings in order with its pauses) and copying the greeting text
+	echo "<script>\n";
+	echo "	var greeting_player = {audio: null, timer: null, button: null};\n";
+	echo "	function greeting_button_label(button, label) {\n";
+	echo "		var span = button.querySelector('.button-label');\n";
+	echo "		(span || button).textContent = label;\n";
+	echo "	}\n";
+	echo "	function greeting_stop() {\n";
+	echo "		if (greeting_player.audio) { greeting_player.audio.pause(); greeting_player.audio.removeAttribute('src'); greeting_player.audio = null; }\n";
+	echo "		if (greeting_player.timer) { clearTimeout(greeting_player.timer); greeting_player.timer = null; }\n";
+	echo "		if (greeting_player.button) { greeting_button_label(greeting_player.button, ".json_encode($text['button-play'])."); greeting_player.button = null; }\n";
+	echo "	}\n";
+	echo "	function greeting_play(button) {\n";
+	echo "		var was_playing = greeting_player.button === button;\n";
+	echo "		greeting_stop();\n";
+	echo "		if (was_playing) { return; }\n";
+	echo "		var holder = button.closest('.greeting_preview');\n";
+	echo "		var preview = holder && holder.dataset.preview ? JSON.parse(holder.dataset.preview) : null;\n";
+	echo "		if (!preview || !preview.steps.length) { return; }\n";
+	echo "		greeting_player.button = button;\n";
+	echo "		greeting_button_label(button, ".json_encode($text['button-stop'])."); \n";
+	echo "		var index = 0;\n";
+	echo "		var next = function() {\n";
+	echo "			if (greeting_player.button !== button) { return; }\n";
+	echo "			if (index >= preview.steps.length) { greeting_stop(); return; }\n";
+	echo "			var step = preview.steps[index++];\n";
+	echo "			if (step.pause !== undefined) { greeting_player.timer = setTimeout(next, step.pause); return; }\n";
+	echo "			var audio = new Audio(step.url);\n";
+	echo "			var advanced = false;\n";
+	echo "			var advance = function() { if (advanced || greeting_player.audio !== audio) { return; } advanced = true; next(); };\n";
+	echo "			greeting_player.audio = audio;\n";
+	echo "			audio.onended = advance;\n";
+	echo "			audio.onerror = advance;\n";
+	echo "			audio.play().catch(advance);\n";
+	echo "		};\n";
+	echo "		next();\n";
+	echo "	}\n";
+	echo "	function greeting_copy(button) {\n";
+	echo "		var field = button.closest('.greeting_text').querySelector('textarea');\n";
+	echo "		var done = function() { greeting_button_label(button, ".json_encode($text['button-copied'])."); setTimeout(function() { greeting_button_label(button, ".json_encode($text['button-copy_text'])."); }, 1500); };\n";
+	echo "		if (navigator.clipboard && window.isSecureContext) { navigator.clipboard.writeText(field.value).then(done); return; }\n";
+	echo "		field.select();\n";
+	echo "		if (document.execCommand('copy')) { done(); }\n";
+	echo "	}\n";
+	echo "	function greeting_select_changed() {\n";
+	echo "		greeting_stop();\n";
+	echo "		var select = document.getElementById('greeting_value');\n";
+	echo "		var option = select.options[select.selectedIndex];\n";
+	echo "		var preview = option && option.dataset.preview ? JSON.parse(option.dataset.preview) : null;\n";
+	echo "		var player = document.getElementById('greeting_select_preview');\n";
+	echo "		var text = document.getElementById('greeting_select_text');\n";
+	echo "		player.dataset.preview = preview ? option.dataset.preview : '';\n";
+	echo "		player.style.display = preview && preview.steps.length ? '' : 'none';\n";
+	echo "		player.querySelector('.greeting_incomplete').style.display = preview && !preview.complete ? '' : 'none';\n";
+	echo "		text.querySelector('textarea').value = preview ? preview.text : '';\n";
+	echo "		text.style.display = preview && preview.text ? '' : 'none';\n";
+	echo "	}\n";
+	echo "</script>\n";
 
 //include the footer
 	require_once "resources/footer.php";

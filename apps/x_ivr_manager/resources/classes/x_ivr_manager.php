@@ -45,6 +45,7 @@ class x_ivr_manager {
 	public $domain_uuid;
 	public $domain_name;
 	public $message;
+	public $number_used_by;
 
 	/**
 	 * declare private variables
@@ -236,6 +237,259 @@ class x_ivr_manager {
 	}
 
 	/**
+	 * Playback steps and text of the domain's recordings and phrases, for the greeting picker
+	 *
+	 * Recordings play through app/recordings/recordings.php, which applies its own recording_play /
+	 * recording_download permission and domain checks. A phrase plays its recordings in order with its pauses;
+	 * actions this cannot play (sounds, say, other macros) are left out and the preview is marked incomplete.
+	 *
+	 * @param bool $playable add playback urls; the caller checked recording_play or recording_download
+	 * @return array keyed by greeting value (recording file name, or phrase:<uuid>): steps, text, complete
+	 */
+	public function greeting_previews($playable) {
+		$previews = [];
+
+		//recordings, by file name
+		$sql = "select recording_uuid, recording_filename, recording_name, recording_message from v_recordings ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		unset($sql, $parameters);
+		$recordings = [];
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			$recordings[$row['recording_filename']] = $row;
+		}
+		$recording_path = $this->recording_path();
+		$file_step = function($filename) use ($playable, $recordings, $recording_path) {
+			if (!$playable) {
+				return null;
+			}
+			if (isset($recordings[$filename])) {
+				return ['url' => '../recordings/recordings.php?action=download&type=rec&id='.urlencode($recordings[$filename]['recording_uuid'])];
+			}
+			if (file_exists($recording_path.'/'.$filename)) {
+				return ['url' => '../recordings/recordings.php?action=download&type=rec&filename='.urlencode($filename)];
+			}
+			return null;
+		};
+		foreach ($recordings as $filename => $row) {
+			$step = $file_step($filename);
+			$previews[$filename] = ['steps' => $step === null ? [] : [$step], 'text' => (string)$row['recording_message'], 'complete' => !$playable || $step !== null];
+		}
+
+		//phrases, in the order FreeSWITCH plays them (languages.lua orders by phrase_detail_order)
+		if (!self::phrases_installed()) {
+			return $previews;
+		}
+		$sql = "select d.phrase_uuid, d.phrase_detail_function, d.phrase_detail_data ";
+		$sql .= "from v_phrases as p, v_phrase_details as d ";
+		$sql .= "where p.domain_uuid = :domain_uuid ";
+		$sql .= "and d.phrase_uuid = p.phrase_uuid ";
+		$sql .= "order by d.phrase_uuid asc, d.phrase_detail_order asc ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		unset($sql, $parameters);
+		$phrases = [];
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			$key = 'phrase:'.$row['phrase_uuid'];
+			if (!isset($phrases[$key])) {
+				$phrases[$key] = ['steps' => [], 'text' => [], 'complete' => true];
+			}
+			$function = (string)$row['phrase_detail_function'];
+			$data = trim((string)$row['phrase_detail_data']);
+			$filename = null;
+			if ($function === 'play-file') {
+				$file = preg_match('/^\$?\{lua streamfile\.lua (.+)\}$/', $data, $matches) ? trim($matches[1]) : $data;
+				//a bare name, or a file directly inside the domain recordings directory; anything else is not ours
+				if (strpos($file, '/') === false) {
+					$filename = $file;
+				}
+				else if (dirname($file) === $recording_path || dirname($file) === 'recordings/'.$this->domain_name) {
+					$filename = basename($file);
+				}
+			}
+			if ($filename !== null && $filename !== '') {
+				$step = $file_step($filename);
+				if ($step === null) {
+					$phrases[$key]['complete'] = false;
+				}
+				else {
+					$phrases[$key]['steps'][] = $step;
+				}
+				$message = isset($recordings[$filename]) ? trim((string)$recordings[$filename]['recording_message']) : '';
+				$phrases[$key]['text'][] = $message !== '' ? $message : '['.(isset($recordings[$filename]) ? $recordings[$filename]['recording_name'] : $filename).']';
+			}
+			else if ($function === 'execute' && preg_match('/^sleep\(([0-9]{1,6})\)$/', $data, $matches)) {
+				$milliseconds = min((int)$matches[1], 60000);
+				$phrases[$key]['steps'][] = ['pause' => $milliseconds];
+				$phrases[$key]['text'][] = '['.self::pause_label($milliseconds).']';
+			}
+			else {
+				$phrases[$key]['complete'] = false;
+				$phrases[$key]['text'][] = '['.$function.' '.$data.']';
+			}
+		}
+		foreach ($phrases as $key => $phrase) {
+			$phrase['text'] = implode("\n", $phrase['text']);
+			//text only, without playback
+			if (!$playable) {
+				$phrase['steps'] = [];
+				$phrase['complete'] = true;
+			}
+			$previews[$key] = $phrase;
+		}
+		return $previews;
+	}
+
+	/**
+	 * A pause as text, e.g. "pause 1.5s"
+	 *
+	 * @param int $milliseconds
+	 * @return string
+	 */
+	private static function pause_label($milliseconds) {
+		return 'pause '.rtrim(rtrim(number_format($milliseconds / 1000, 1, '.', ''), '0'), '.').'s';
+	}
+
+	/**
+	 * Numbers already dialable in the domain: extensions and number aliases, and dialplan entries in the domain
+	 * context, as number => what uses it
+	 *
+	 * @param string|null $dialplan_uuid a dialplan entry to leave out (the schedule's own time condition)
+	 * @return array|false false when the lookup failed
+	 */
+	private function used_numbers($dialplan_uuid = null) {
+		$sql = "select extension, number_alias from v_extensions ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$extensions = $this->database->select($sql, $parameters, 'all');
+		unset($sql, $parameters);
+		$sql = "select dialplan_number, dialplan_name from v_dialplans ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "and dialplan_context = :context ";
+		$sql .= "and dialplan_number is not null and dialplan_number <> '' ";
+		if (is_uuid($dialplan_uuid)) {
+			$sql .= "and dialplan_uuid <> :dialplan_uuid ";
+			$parameters['dialplan_uuid'] = $dialplan_uuid;
+		}
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['context'] = $this->domain_name;
+		$dialplans = $this->database->select($sql, $parameters, 'all');
+		unset($sql, $parameters);
+		if ($extensions === false || $dialplans === false) {
+			return false;
+		}
+		$used = [];
+		foreach (is_array($dialplans) ? $dialplans : [] as $row) {
+			$used[(string)$row['dialplan_number']] = (string)$row['dialplan_name'];
+		}
+		foreach (is_array($extensions) ? $extensions : [] as $row) {
+			foreach (['extension', 'number_alias'] as $field) {
+				if ((string)$row[$field] !== '') {
+					$used[(string)$row[$field]] = 'extension '.$row['extension'];
+				}
+			}
+		}
+		return $used;
+	}
+
+	/**
+	 * Where the number of a schedule is already dialable in the domain
+	 *
+	 * @param string $number
+	 * @param string|null $dialplan_uuid the schedule's own time condition, ignored
+	 * @return string|null what uses it, or null
+	 */
+	public function number_in_use($number, $dialplan_uuid = null) {
+		$used = $this->used_numbers($dialplan_uuid);
+		if ($used === false) {
+			return 'an unknown entry (the lookup failed)';
+		}
+		return $used[(string)$number] ?? null;
+	}
+
+	/**
+	 * First unused number in the time condition extension range (time_conditions > extension_range, e.g. 800-899
+	 * or 800-899,900-999)
+	 *
+	 * @return string empty when the range is unset, invalid or full
+	 */
+	public function suggest_schedule_number() {
+		$ranges = [];
+		$span = 0;
+		foreach (explode(',', (string)$this->settings->get('time_conditions', 'extension_range', '')) as $range) {
+			if (!preg_match('/^\s*([0-9]{1,10})\s*-\s*([0-9]{1,10})\s*$/', $range, $matches) || (int)$matches[2] < (int)$matches[1]) {
+				continue;
+			}
+			$span += (int)$matches[2] - (int)$matches[1] + 1;
+			$ranges[] = [(int)$matches[1], (int)$matches[2]];
+		}
+		if (empty($ranges) || $span > 100000) {
+			return '';
+		}
+		$used = $this->used_numbers();
+		if ($used === false) {
+			return '';
+		}
+		foreach ($ranges as [$first, $last]) {
+			for ($number = $first; $number <= $last; $number++) {
+				if (!isset($used[(string)$number])) {
+					return (string)$number;
+				}
+			}
+		}
+		return '';
+	}
+
+	/**
+	 * Inbound routes that send calls to the schedule
+	 *
+	 * @param array $schedule from get_schedule()
+	 * @return array destination_number, destination_description
+	 */
+	public function schedule_inbound_routes(array $schedule) {
+		if (empty($schedule['dialplan_number'])) {
+			return [];
+		}
+		$target = $schedule['dialplan_number'].' XML '.($schedule['dialplan_context'] ?: $this->domain_name);
+		$sql = "select destination_number, destination_description from v_destinations ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "and destination_type = 'inbound' ";
+		$sql .= "and ((destination_app = 'transfer' and destination_data = :target) or cast(destination_actions as text) like :actions escape '!') ";
+		$sql .= "order by destination_number asc ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['target'] = $target;
+		$parameters['actions'] = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], json_encode($target)).'%';
+		$rows = $this->database->select($sql, $parameters, 'all');
+		unset($sql, $parameters);
+		$routes = [];
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			$routes[$row['destination_number']] = $row;
+		}
+
+		//routes added or edited in Dialplan > Inbound Routes keep the transfer in their public dialplan details
+		$sql = "select d.dialplan_number as destination_number, d.dialplan_name as destination_description ";
+		$sql .= "from v_dialplans as d, v_dialplan_details as t ";
+		$sql .= "where d.domain_uuid = :domain_uuid ";
+		$sql .= "and d.dialplan_context = 'public' ";
+		$sql .= "and t.dialplan_uuid = d.dialplan_uuid ";
+		$sql .= "and t.dialplan_detail_tag in ('action', 'anti-action') ";
+		$sql .= "and t.dialplan_detail_type = 'transfer' ";
+		$sql .= "and t.dialplan_detail_data = :target ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['target'] = $target;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			$number = (string)$row['destination_number'] !== '' ? $row['destination_number'] : $row['destination_description'];
+			if (!isset($routes[$number])) {
+				$routes[$number] = ['destination_number' => $number, 'destination_description' => $row['destination_description']];
+			}
+		}
+		ksort($routes, SORT_NATURAL);
+		return array_values($routes);
+	}
+
+	/**
 	 * Set a greeting to an existing recording or phrase of the domain
 	 *
 	 * @param array $ivr_menu the ivr menu row
@@ -392,7 +646,7 @@ class x_ivr_manager {
 				continue;
 			}
 			$n++;
-			$recording_name = $phrase_name.'-'.$n;
+			$recording_name = $phrase_name.' - Part '.$n;
 			$filename = $this->recording_filename($recording_name, 'wav');
 			$path = $this->recording_path().'/'.$filename;
 			if (file_exists($path) || !$tts->synthesize($part['value'], $voice, $speed, $sample_rate, $path)) {
@@ -431,7 +685,17 @@ class x_ivr_manager {
 		$array['phrases'][0]['phrase_name'] = $phrase_name;
 		$array['phrases'][0]['phrase_language'] = $language;
 		$array['phrases'][0]['phrase_enabled'] = 'true';
-		$array['phrases'][0]['phrase_description'] = 'Google Text-to-Speech, '.$voice;
+		//the script on one line, for the phrase list; upstream edits the description in a 255 character text input.
+		//The full text of each part is in its recording (recording_message)
+		$script = [];
+		foreach ($parts as $part) {
+			$script[] = $part['type'] === 'pause' ? '['.self::pause_label((int)$part['value']).']' : $part['value'];
+		}
+		$description = 'Google Text-to-Speech, '.$voice.': '.implode(' / ', $script);
+		if (mb_strlen($description) > 255) {
+			$description = mb_substr($description, 0, 254).'…';
+		}
+		$array['phrases'][0]['phrase_description'] = $description;
 		$order = 0;
 		foreach ($parts as $index => $part) {
 			$order += 5;
@@ -558,6 +822,31 @@ class x_ivr_manager {
 	}
 
 	/**
+	 * Default name of a new greeting, e.g. "Main Menu - Long Greeting - 2026-11-16 14:05" (domain time zone)
+	 *
+	 * @param array $ivr_menu the ivr menu row
+	 * @param string $type greet_long or greet_short
+	 * @return string
+	 */
+	public function greeting_name(array $ivr_menu, $type) {
+		$now = new DateTime('now', new DateTimeZone($this->time_zone()));
+		$menu = trim((string)($ivr_menu['ivr_menu_name'] ?? '')) ?: 'IVR '.$ivr_menu['ivr_menu_extension'];
+		return $menu.' - '.($type == 'greet_short' ? 'Short Greeting' : 'Long Greeting').' - '.$now->format('Y-m-d H:i');
+	}
+
+	/**
+	 * Default name of a new phrase, e.g. "Main_Menu_Greeting_2026-11-16_1405"; phrase names allow [A-Za-z0-9_.-]
+	 *
+	 * @param array $ivr_menu the ivr menu row
+	 * @return string
+	 */
+	public function phrase_default_name(array $ivr_menu) {
+		$now = new DateTime('now', new DateTimeZone($this->time_zone()));
+		$menu = trim(preg_replace('/[^A-Za-z0-9]+/', '_', (string)($ivr_menu['ivr_menu_name'] ?? '')), '_') ?: 'IVR_'.$ivr_menu['ivr_menu_extension'];
+		return substr($menu, 0, 55).'_Greeting_'.$now->format('Y-m-d_Hi');
+	}
+
+	/**
 	 * Build a safe, unused recording file name
 	 *
 	 * @param string $recording_name
@@ -566,7 +855,9 @@ class x_ivr_manager {
 	 */
 	public function recording_filename($recording_name, $extension) {
 		$base = preg_replace('#[^a-zA-Z0-9_\-]#', '_', $recording_name);
-		$base = trim($base, '_');
+		//"Main Menu - Long Greeting" reads Main_Menu-Long_Greeting
+		$base = preg_replace(['#_*-_*#', '#_+#'], ['-', '_'], $base);
+		$base = trim($base, '_-');
 		if ($base === '') {
 			$base = 'recording';
 		}
@@ -660,7 +951,7 @@ class x_ivr_manager {
 
 		$recording_name = $tts['recording_name'] ?? '';
 		if (empty($recording_name)) {
-			$recording_name = 'recording'.$ivr_menu['ivr_menu_extension'].($type == 'greet_short' ? '-short' : null).'-'.str_pad(random_int(0, 9999), 4, '0', STR_PAD_LEFT);
+			$recording_name = $this->greeting_name($ivr_menu, $type);
 		}
 
 		//set the recording format for approved types
@@ -870,7 +1161,7 @@ class x_ivr_manager {
 			return false;
 		}
 		if (empty($recording_name)) {
-			$recording_name = 'recording'.$ivr_menu['ivr_menu_extension'].($type == 'greet_short' ? '-short' : null).'-'.date('Ymd-His');
+			$recording_name = $this->greeting_name($ivr_menu, $type);
 		}
 		$recording_filename = $this->recording_filename($recording_name, 'wav');
 		$recording_path = $this->recording_path();
@@ -1097,6 +1388,17 @@ class x_ivr_manager {
 		//find the existing time condition
 			$existing = $this->get_schedule($ivr_menu);
 			$action = !empty($existing) ? 'update' : 'add';
+
+		//a new or changed number must not already be dialable in the domain; an existing one is kept as it is,
+		//so inbound routes that use it keep working
+			$this->number_used_by = null;
+			if ($action == 'add' || $dialplan_number !== (string)$existing['dialplan_number']) {
+				$this->number_used_by = $this->number_in_use($dialplan_number, $existing['dialplan_uuid'] ?? null);
+			}
+			if ($this->number_used_by !== null) {
+				$this->message = 'message-schedule_number_in_use';
+				return false;
+			}
 
 		//do not silently drop conditions added in the stock time condition editor
 			if ($action == 'update' && !empty($existing['complex']) && ($schedule['confirm_replace'] ?? '') !== 'true') {
