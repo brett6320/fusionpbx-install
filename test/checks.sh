@@ -29,6 +29,9 @@ db "insert into v_devices (device_uuid, domain_uuid, device_address, device_vend
 check "provisioning requires auth (401)" test "$(curl -sk -o /dev/null -w '%{http_code}' -H "Host: $test_domain" "https://127.0.0.1/app/provision/?mac=0011223344aa&file=0011223344aa.cfg")" = 401
 db "delete from v_devices where device_uuid = '$test_device'" >/dev/null
 
+#dark theme is the default (core/themes: Cobalt Blue)
+check "dark theme is the default" test "$(db "select default_setting_value from v_default_settings where default_setting_uuid='b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' and default_setting_enabled")" = "eda762b3-e356-4225-a394-38b5f092fd44"
+
 #our apps: copied, syntactically valid on the target PHP, registered
 for app in /usr/src/x-install/apps/x_*/; do
 	name=$(basename "$app")
@@ -44,6 +47,9 @@ done
 while IFS= read -r table; do
 	check "table $table exists" test "$(db "select to_regclass('public.$table') is not null")" = "t"
 done < <(grep -rhoE "\['db'\]\[\\\$y\]\['table'\]\['name'\] = \"v_x_[a-z0-9_]+\"" /usr/src/x-install/apps | grep -oE 'v_x_[a-z0-9_]+' | sort -u)
+
+#web login lifetime, read the way phpsessionclean reads it
+check "php-fpm session lifetime is $session_lifetime" test "$(PHP_INI_SCAN_DIR="/etc/php/$php_version/fpm/conf.d" "php$php_version" -c "/etc/php/$php_version/fpm/php.ini" -r 'echo ini_get("session.gc_maxlifetime");')" = "$session_lifetime"
 
 #time sync
 check "chrony active" systemctl is-active chrony
