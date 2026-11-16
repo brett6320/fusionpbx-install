@@ -93,7 +93,9 @@ docker exec "$name" sed -i '/^WEB_PREFIX_LIST_ID=/d' /etc/default/fusionpbx-aws
 docker exec -e X_AWS_SYNC_CMD=/usr/src/x-install/test/fake-x-aws-sync "$name" bash /usr/src/x-install/resources/aws.sh upgrade >/dev/null
 docker exec "$name" grep -qx 'ignoreip = 127.0.0.1/8 ::1 192.0.2.0/24 198.51.100.0/24' "$jail" || { docker exec "$name" cat "$jail"; echo "FAIL  Fail2ban whitelist after removing a list"; exit 1; }
 #the real helper skips networks broader than /16
-docker exec "$name" bash -c 'printf "%s\n" "{\"entries\":{\"0.0.0.0/0\":{\"cidr\":\"0.0.0.0/0\"}}}" > /var/lib/x_carrier_acl/aws/allow-test.json && /usr/local/sbin/x-fail2ban-ignoreip; rm -f /var/lib/x_carrier_acl/aws/allow-test.json' 2>&1 | grep -q "0.0.0.0/0 in allow-test.json is broader" || { echo "FAIL  broad network not reported"; exit 1; }
+#(captured first: with pipefail, grep -q closing the pipe early would fail the pipeline)
+out=$(docker exec "$name" bash -c 'printf "%s\n" "{\"entries\":{\"0.0.0.0/0\":{\"cidr\":\"0.0.0.0/0\"}}}" > /var/lib/x_carrier_acl/aws/allow-test.json && /usr/local/sbin/x-fail2ban-ignoreip; rm -f /var/lib/x_carrier_acl/aws/allow-test.json' 2>&1) || true
+grep -q "0.0.0.0/0 in allow-test.json is broader" <<<"$out" || { printf '%s\n' "$out"; echo "FAIL  broad network not reported"; exit 1; }
 ! docker exec "$name" grep -q '0\.0\.0\.0/0' "$jail" || { echo "FAIL  0.0.0.0/0 whitelisted"; exit 1; }
 #the unit runs the helper after every sync (ExecStopPost=+, outside the unit's sandbox), whatever the sync's result
 docker exec "$name" systemctl start x-aws-sync.service || true
