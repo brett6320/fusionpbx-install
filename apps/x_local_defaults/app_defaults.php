@@ -113,7 +113,8 @@ if ($domains_processed == 1) {
 		}
 
 	//reword upstream's English email templates (resources/email_templates.php). A template is replaced only while
-	//it still has upstream's exact subject and body, so an admin's edits are kept; one that does not exist yet
+	//it still has upstream's exact subject and body (trimmed: database::save trims what upstream inserts), so an
+	//admin's edits are kept; one that does not exist yet
 	//(app/ runs before core/, so on a fresh install core/email_templates has not inserted it) is inserted with
 	//upstream's uuid, and upstream then skips it
 		$email_templates = require __DIR__.'/resources/email_templates.php';
@@ -132,7 +133,7 @@ if ($domains_processed == 1) {
 				$parameters['template_type'] = $email_template['type'];
 				$parameters['template_description'] = $email_template['description'];
 			}
-			else if ($row['template_subject'] === $email_template['old_subject'] && $row['template_body'] === $email_template['old_body']) {
+			else if (trim((string)$row['template_subject']) === trim($email_template['old_subject']) && trim((string)$row['template_body']) === trim($email_template['old_body'])) {
 				$sql = "update v_email_templates ";
 				$sql .= "set template_subject = :template_subject, template_body = :template_body, update_date = now() ";
 				$sql .= "where email_template_uuid = :email_template_uuid ";
@@ -141,8 +142,8 @@ if ($domains_processed == 1) {
 				continue;
 			}
 			$parameters['email_template_uuid'] = $email_template_uuid;
-			$parameters['template_subject'] = $email_template['subject'];
-			$parameters['template_body'] = $email_template['body'];
+			$parameters['template_subject'] = trim($email_template['subject']);
+			$parameters['template_body'] = trim($email_template['body']);
 			$database->execute($sql, $parameters);
 			unset($sql, $parameters);
 		}
