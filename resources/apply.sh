@@ -84,4 +84,8 @@ for unit in apps/x_*/systemd/*.timer apps/x_*/systemd/*.path; do
 	enable_unit "$(basename "$unit")"
 done
 
+#AWS instance settings, last: it needs the feed tables and the worker units, and must not stop the units above
+#from being re-enabled if it fails
+bash resources/aws.sh "$mode"
+
 info "Layer applied ($mode)"

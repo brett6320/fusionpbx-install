@@ -1,0 +1,284 @@
+#!/usr/bin/python3 -I
+# Read this instance's AWS settings (/etc/default/fusionpbx-aws, written by deploy/aws/fusionpbx.yaml) and write
+# the entries of the Telnyx signalling and media prefix lists to /var/lib/x_carrier_acl/aws/telnyx-*.json, where
+# the carrier ACL worker reads them as feeds (docs/design/carrier_acl.md section 13).
+#
+# Runs as root: credentials come from the instance role over IMDSv2. Standard library only. Either both lists are
+# read and written, or nothing is written and the last good files stay. The files are byte-stable (sorted, no
+# timestamps) and only rewritten when their content changes: the worker uses the content hash for approvals.
+#
+# Usage: x-aws-sync              sync the prefix lists; exit 1 on failure, 2 on a failure no retry fixes
+#        x-aws-sync --address    print this instance's Elastic IP if IMDS shows it is the instance and address named
+#                                in the settings file (and AWS shows the association); exit 1 otherwise
+#        x-aws-sync --check      check the settings file only (no network); exit 1 if it is missing or invalid
+#        x-aws-sync --self-test  check the request signing against AWS's published test vector
+
+import datetime
+import hashlib
+import hmac
+import ipaddress
+import json
+import os
+import re
+import stat
+import sys
+import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+
+SETTINGS = '/etc/default/fusionpbx-aws'
+OUT_DIR = '/var/lib/x_carrier_acl/aws'
+IMDS = 'http://169.254.169.254'
+EC2_VERSION = '2016-11-15'
+TIMEOUT = 20
+MAX_PAGES = 50
+KEYS = {
+	'AWS_REGION': r'[a-z]{2}(-[a-z]+)+-[0-9]+',
+	'INSTANCE_ID': r'i-[0-9a-f]{8,17}',
+	'ELASTIC_IP': r'[0-9]{1,3}(\.[0-9]{1,3}){3}',
+	'ELASTIC_IP_ALLOCATION_ID': r'eipalloc-[0-9a-f]{8,17}',
+	'TELNYX_SIGNALLING_PREFIX_LIST_ID': r'pl-[0-9a-f]{8,17}',
+	'TELNYX_MEDIA_PREFIX_LIST_ID': r'pl-[0-9a-f]{8,17}',
+}
+#IMDS and the EC2 API are never reached through a proxy from the environment
+OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+LISTS = (('telnyx-signalling', 'TELNYX_SIGNALLING_PREFIX_LIST_ID'), ('telnyx-media', 'TELNYX_MEDIA_PREFIX_LIST_ID'))
+
+
+class SyncError(Exception):
+	pass
+
+
+class PermanentError(SyncError):
+	"""Retrying does not help: wrong instance or address, access denied, not found. Exit 2."""
+
+
+def read_settings(path):
+	"""KEY=value lines; only known keys, each checked against its pattern. The file is never sourced, and must be a
+	root-owned regular file that only root can write."""
+	settings = {}
+	try:
+		info = os.lstat(path)
+	except OSError as error:
+		raise PermanentError('cannot read %s: %s' % (path, error))
+	if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+		raise PermanentError('%s must be a regular file owned by root and writable only by root' % path)
+	try:
+		with open(path, encoding='utf-8') as handle:
+			for line in handle:
+				line = line.strip()
+				if not line or line.startswith('#') or '=' not in line:
+					continue
+				key, value = line.split('=', 1)
+				value = value.strip().strip('"\'')
+				if key in KEYS:
+					settings[key] = value
+	except OSError as error:
+		raise SyncError('cannot read %s: %s' % (path, error))
+	for key, pattern in KEYS.items():
+		if not re.fullmatch(pattern, settings.get(key, '')):
+			raise PermanentError('%s: %s is missing or invalid' % (path, key))
+	return settings
+
+
+def sign(method, host, query, region, service, credentials, now):
+	"""AWS Signature Version 4 headers for a request with an empty body."""
+	amz_date = now.strftime('%Y%m%dT%H%M%SZ')
+	day = amz_date[:8]
+	headers = {'host': host, 'x-amz-date': amz_date}
+	if credentials.get('token'):
+		headers['x-amz-security-token'] = credentials['token']
+	canonical_query = '&'.join('%s=%s' % (urllib.parse.quote(k, safe='-_.~'), urllib.parse.quote(v, safe='-_.~'))
+		for k, v in sorted(query.items()))
+	signed = ';'.join(sorted(headers))
+	canonical = '\n'.join([method, '/', canonical_query,
+		''.join('%s:%s\n' % (k, headers[k]) for k in sorted(headers)), signed, hashlib.sha256(b'').hexdigest()])
+	scope = '%s/%s/%s/aws4_request' % (day, region, service)
+	to_sign = '\n'.join(['AWS4-HMAC-SHA256', amz_date, scope, hashlib.sha256(canonical.encode()).hexdigest()])
+	key = ('AWS4' + credentials['secret']).encode()
+	for part in (day, region, service, 'aws4_request'):
+		key = hmac.new(key, part.encode(), hashlib.sha256).digest()
+	signature = hmac.new(key, to_sign.encode(), hashlib.sha256).hexdigest()
+	headers['Authorization'] = 'AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s' % (
+		credentials['key'], scope, signed, signature)
+	return canonical_query, headers
+
+
+def imds(path, token=None, method='GET'):
+	headers = {'X-aws-ec2-metadata-token': token} if token else {'X-aws-ec2-metadata-token-ttl-seconds': '300'}
+	request = urllib.request.Request(IMDS + path, method=method, headers=headers)
+	try:
+		with OPENER.open(request, timeout=TIMEOUT) as response:
+			return response.read().decode()
+	except (urllib.error.URLError, OSError) as error:
+		raise SyncError('instance metadata %s: %s' % (path, error))
+
+
+def instance_credentials(settings):
+	"""Role credentials, after checking the settings file belongs to this instance (a restored or cloned disk
+	carries the original instance's file)."""
+	token = imds('/latest/api/token', method='PUT')
+	instance_id = imds('/latest/meta-data/instance-id', token).strip()
+	if instance_id != settings['INSTANCE_ID']:
+		raise PermanentError('%s is for %s, but this is %s' % (SETTINGS, settings['INSTANCE_ID'], instance_id))
+	role = imds('/latest/meta-data/iam/security-credentials/', token).split()
+	if not role:
+		raise PermanentError('this instance has no IAM role')
+	try:
+		data = json.loads(imds('/latest/meta-data/iam/security-credentials/' + role[0], token))
+		credentials = {'key': data['AccessKeyId'], 'secret': data['SecretAccessKey'], 'token': data['Token']}
+	except (ValueError, KeyError) as error:
+		raise SyncError('unreadable instance role credentials: %s' % error)
+	return credentials, token
+
+
+def ec2(settings, credentials, action, params):
+	"""One EC2 Query API call; returns the response root with the namespace stripped from every tag."""
+	region = settings['AWS_REGION']
+	if region.startswith(('cn-', 'us-gov-', 'us-iso')):
+		raise PermanentError('region %s is not supported (commercial AWS partition only)' % region)
+	host = 'ec2.%s.amazonaws.com' % region
+	query = dict(params, Action=action, Version=EC2_VERSION)
+	canonical_query, headers = sign('GET', host, query, region, 'ec2', credentials,
+		datetime.datetime.now(datetime.timezone.utc))
+	request = urllib.request.Request('https://%s/?%s' % (host, canonical_query), headers=headers)
+	try:
+		with OPENER.open(request, timeout=TIMEOUT) as response:
+			body = response.read()
+	except urllib.error.HTTPError as error:
+		detail = error.read().decode(errors='replace')
+		match = re.search(r'<Code>(.*?)</Code>.*?<Message>(.*?)</Message>', detail, re.S)
+		#4xx other than throttling is a request or permission problem, not a transient one
+		permanent = 400 <= error.code < 500 and not (match and 'Throttl' in match.group(1)) and error.code != 429
+		raise (PermanentError if permanent else SyncError)('%s: %s' % (action, '%s: %s' % match.groups() if match else 'HTTP %d' % error.code))
+	except (urllib.error.URLError, OSError) as error:
+		raise SyncError('%s: %s' % (action, error))
+	try:
+		root = ET.fromstring(body)
+	except ET.ParseError as error:
+		raise SyncError('%s: unreadable response: %s' % (action, error))
+	for element in root.iter():
+		element.tag = element.tag.split('}', 1)[-1]
+	return root
+
+
+def prefix_list(settings, credentials, list_id):
+	root = ec2(settings, credentials, 'DescribeManagedPrefixLists', {'PrefixListId.1': list_id})
+	item = root.find('prefixListSet/item')
+	if item is None:
+		raise PermanentError('prefix list %s not found' % list_id)
+	if item.findtext('addressFamily') != 'IPv4':
+		raise PermanentError('prefix list %s is not IPv4' % list_id)
+	#a list mid-change could pair one version number with another version's entries
+	state = item.findtext('state') or ''
+	if state not in ('create-complete', 'modify-complete', 'restore-complete'):
+		raise SyncError('prefix list %s is %s; keeping the last good copy' % (list_id, state or 'in an unknown state'))
+	version = item.findtext('version') or ''
+	if not version.isdigit():
+		raise SyncError('prefix list %s has no version' % list_id)
+	entries, token = [], None
+	for _ in range(MAX_PAGES):
+		params = {'PrefixListId': list_id, 'TargetVersion': version, 'MaxResults': '100'}
+		if token:
+			params['NextToken'] = token
+		root = ec2(settings, credentials, 'GetManagedPrefixListEntries', params)
+		for entry in root.findall('entrySet/item'):
+			entries.append({'cidr': entry.findtext('cidr') or '', 'description': entry.findtext('description') or ''})
+		token = root.findtext('nextToken')
+		if not token:
+			break
+	else:
+		raise SyncError('prefix list %s has more than %d pages of entries' % (list_id, MAX_PAGES))
+	if not entries:
+		raise SyncError('prefix list %s has no entries' % list_id)
+	#keyed by network, so the feed's entry labels (entries.<cidr>.cidr) do not shift when the list changes
+	try:
+		by_cidr = {str(ipaddress.ip_network(e['cidr'], strict=False)): e for e in entries}
+	except ValueError as error:
+		raise SyncError('prefix list %s: %s' % (list_id, error))
+	return {'prefix_list_id': list_id, 'name': item.findtext('prefixListName') or '', 'version': version,
+		'entries': by_cidr}
+
+
+def elastic_ip(settings, credentials, token):
+	"""The Elastic IP, only if IMDS and AWS both show it on this instance. A missing association is retried (it can
+	lag first boot); a cloned disk already failed the instance ID check."""
+	public_ipv4 = imds('/latest/meta-data/public-ipv4', token).strip()
+	if public_ipv4 != settings['ELASTIC_IP']:
+		raise SyncError('this instance\'s public address is %s, not %s from %s' % (public_ipv4 or 'none',
+			settings['ELASTIC_IP'], SETTINGS))
+	root = ec2(settings, credentials, 'DescribeAddresses', {'AllocationId.1': settings['ELASTIC_IP_ALLOCATION_ID']})
+	item = root.find('addressesSet/item')
+	if item is None:
+		raise PermanentError('Elastic IP %s not found' % settings['ELASTIC_IP_ALLOCATION_ID'])
+	public_ip = item.findtext('publicIp') or ''
+	if not re.fullmatch(KEYS['ELASTIC_IP'], public_ip):
+		raise SyncError('Elastic IP %s has no public address' % settings['ELASTIC_IP_ALLOCATION_ID'])
+	if public_ip != public_ipv4 or item.findtext('instanceId') != settings['INSTANCE_ID']:
+		raise SyncError('Elastic IP %s is not associated with this instance' % public_ip)
+	return public_ip
+
+
+def write_json(name, data):
+	"""Write only when the bytes change, so an unchanged list keeps its hash and mtime."""
+	path = os.path.join(OUT_DIR, name + '.json')
+	content = (json.dumps(data, sort_keys=True, separators=(',', ':')) + '\n').encode()
+	try:
+		with open(path, 'rb') as current:
+			if current.read() == content:
+				return False
+	except FileNotFoundError:
+		pass
+	handle, temp = tempfile.mkstemp(dir=OUT_DIR, prefix='.' + name + '.')
+	try:
+		with os.fdopen(handle, 'wb') as out:
+			out.write(content)
+		os.chmod(temp, 0o644)
+		os.replace(temp, path)
+	except BaseException:
+		os.unlink(temp)
+		raise
+	return True
+
+
+def self_test():
+	"""get-vanilla from AWS's Signature Version 4 test suite."""
+	credentials = {'key': 'AKIDEXAMPLE', 'secret': 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY'}
+	now = datetime.datetime(2015, 8, 30, 12, 36, 0, tzinfo=datetime.timezone.utc)
+	_, headers = sign('GET', 'example.amazonaws.com', {}, 'us-east-1', 'service', credentials, now)
+	expected = '5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31'
+	if not headers['Authorization'].endswith('Signature=' + expected):
+		sys.exit('self-test failed: ' + headers['Authorization'])
+	print('self-test ok')
+
+
+def main():
+	args = sys.argv[1:]
+	if args == ['--self-test']:
+		self_test()
+		return
+	if args not in ([], ['--address'], ['--check']):
+		sys.exit('usage: x-aws-sync [--address|--check|--self-test]')
+	try:
+		settings = read_settings(SETTINGS)
+		if args == ['--check']:
+			return
+		credentials, token = instance_credentials(settings)
+		if args == ['--address']:
+			print(elastic_ip(settings, credentials, token))
+			return
+		results = [(name, prefix_list(settings, credentials, settings[key])) for name, key in LISTS]
+	except SyncError as error:
+		print('x-aws-sync: %s' % error, file=sys.stderr)
+		sys.exit(2 if isinstance(error, PermanentError) else 1)
+	os.makedirs(OUT_DIR, mode=0o755, exist_ok=True)
+	for name, data in results:
+		changed = write_json(name, data)
+		print('%s: %s version %s, %d entries%s' % (name, data['prefix_list_id'], data['version'], len(data['entries']),
+			'' if changed else ' (unchanged)'))
+
+
+if __name__ == '__main__':
+	main()

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Stand-in for x-aws-sync in test/install-test.sh: writes fixed prefix lists (Telnyx's published addresses) and
+# prints a documentation address as the Elastic IP.
+set -euo pipefail
+if [ "${1:-}" = --address ]; then
+	echo 203.0.113.10
+	exit 0
+fi
+dir=/var/lib/x_carrier_acl/aws
+printf '%s\n' '{"entries":{"192.76.120.10/32":{"cidr":"192.76.120.10/32","description":"US primary"},"64.16.250.10/32":{"cidr":"64.16.250.10/32","description":"US secondary"}},"name":"telnyx-signalling","prefix_list_id":"pl-0123456789abcdef0","version":"1"}' > "$dir/telnyx-signalling.json"
+printf '%s\n' '{"entries":{"50.114.144.0/21":{"cidr":"50.114.144.0/21","description":"media"},"64.16.226.0/24":{"cidr":"64.16.226.0/24","description":"media"}},"name":"telnyx-media","prefix_list_id":"pl-0fedcba9876543210","version":"1"}' > "$dir/telnyx-media.json"
+chmod 0644 "$dir"/telnyx-*.json

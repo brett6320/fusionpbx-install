@@ -61,3 +61,48 @@ for repo in $(docker exec "$name" bash -c 'for g in /var/www/fusionpbx/app/*/.gi
 done
 echo "PASS  optional apps update as www-data"
 docker exec -i "$name" bash -s < test/checks.sh
+
+echo "== AWS: prefix list feeds and the Elastic IP as external address"
+docker exec "$name" bash -c 'cat > /etc/default/fusionpbx-aws <<CONF
+AWS_REGION=us-east-1
+AWS_STACK_NAME=pbx-test
+INSTANCE_ID=i-0123456789abcdef0
+ELASTIC_IP=203.0.113.10
+ELASTIC_IP_ALLOCATION_ID=eipalloc-0123456789abcdef0
+TELNYX_SIGNALLING_PREFIX_LIST_ID=pl-0123456789abcdef0
+TELNYX_MEDIA_PREFIX_LIST_ID=pl-0fedcba9876543210
+CONF'
+docker exec -e X_AWS_SYNC_CMD=/usr/src/x-install/test/fake-x-aws-sync "$name" bash /usr/src/x-install/resources/aws.sh install
+psql_value() {
+	docker exec "$name" bash -c "cd / && runuser -u postgres -- psql -d fusionpbx -qtAX -c \"$1\""
+}
+docker exec "$name" grep -q 'data="external_sip_ip=203.0.113.10"' /etc/freeswitch/vars.xml || { echo "FAIL  vars.xml external_sip_ip"; exit 1; }
+docker exec "$name" grep -q 'data="external_rtp_ip=203.0.113.10"' /etc/freeswitch/vars.xml || { echo "FAIL  vars.xml external_rtp_ip"; exit 1; }
+[ "$(docker exec "$name" fs_cli -x 'global_getvar external_sip_ip' | tr -d '[:space:]')" = 203.0.113.10 ] || { echo "FAIL  FreeSWITCH external_sip_ip"; exit 1; }
+echo "PASS  vars.xml and FreeSWITCH use the Elastic IP"
+entries=$(psql_value "select e.entry_role || ':' || count(*) from v_x_carrier_acl_entries e join v_x_carrier_acl_feeds f using (x_carrier_acl_feed_uuid) where f.feed_url like 'file://%' group by e.entry_role order by 1")
+[ "$entries" = "$(printf 'media:2\nsignaling:2')" ] || { echo "FAIL  AWS feed entries: $entries"; exit 1; }
+echo "PASS  AWS prefix lists applied to the carrier ACL"
+
+#an admin's own value is kept, and a deleted feed is not recreated
+psql_value "update v_vars set var_value = '198.51.100.7' where var_name = 'external_rtp_ip'" >/dev/null
+psql_value "delete from v_x_carrier_acl_entries where x_carrier_acl_feed_uuid = '5a9e3c72-1b4d-4f60-8e2a-7c3b9d1e5f02'; delete from v_x_carrier_acl_runs where x_carrier_acl_feed_uuid = '5a9e3c72-1b4d-4f60-8e2a-7c3b9d1e5f02'; delete from v_x_carrier_acl_feeds where x_carrier_acl_feed_uuid = '5a9e3c72-1b4d-4f60-8e2a-7c3b9d1e5f02'" >/dev/null
+docker exec -e X_AWS_SYNC_CMD=/usr/src/x-install/test/fake-x-aws-sync "$name" bash /usr/src/x-install/resources/aws.sh upgrade
+[ "$(psql_value "select var_value from v_vars where var_name = 'external_rtp_ip'")" = 198.51.100.7 ] || { echo "FAIL  admin external_rtp_ip overwritten"; exit 1; }
+docker exec "$name" grep -q 'data="external_rtp_ip=198.51.100.7"' /etc/freeswitch/vars.xml || { echo "FAIL  vars.xml lost the admin external_rtp_ip"; exit 1; }
+[ "$(psql_value "select count(*) from v_x_carrier_acl_feeds where feed_url like 'file://%'")" = 1 ] || { echo "FAIL  deleted AWS feed recreated"; exit 1; }
+#with FreeSWITCH running the admin's rtp address, only the managed external_sip_ip is checked: no restart warning
+docker exec "$name" systemctl restart freeswitch
+for _ in $(seq 30); do docker exec "$name" fs_cli -x status >/dev/null 2>&1 && break; sleep 2; done
+out=$(docker exec -e X_AWS_SYNC_CMD=/usr/src/x-install/test/fake-x-aws-sync "$name" bash /usr/src/x-install/resources/aws.sh upgrade 2>&1)
+if grep -qE "still running with the old value|does not use it yet" <<<"$out"; then
+	printf '%s\n' "$out"; echo "FAIL  restart warning for a variable the installer does not manage"; exit 1
+fi
+echo "PASS  admin values and deletions kept on upgrade"
+
+#an invalid file configures nothing and removes the timer
+docker exec "$name" sed -i 's/^INSTANCE_ID=.*/INSTANCE_ID=not-an-instance/' /etc/default/fusionpbx-aws
+out=$(docker exec -e X_AWS_SYNC_CMD=/usr/src/x-install/test/fake-x-aws-sync "$name" bash /usr/src/x-install/resources/aws.sh upgrade 2>&1)
+grep -q "is not valid, so nothing was configured from AWS" <<<"$out" || { printf '%s\n' "$out"; echo "FAIL  invalid AWS settings not refused"; exit 1; }
+docker exec "$name" test ! -e /etc/systemd/system/x-aws-sync.timer || { echo "FAIL  x-aws-sync.timer left installed"; exit 1; }
+echo "PASS  invalid AWS settings configure nothing"

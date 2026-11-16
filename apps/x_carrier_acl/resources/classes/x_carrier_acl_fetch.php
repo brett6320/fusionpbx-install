@@ -23,6 +23,9 @@
  * php-fpm without the worker unit's IPAddressDeny) every hop's host is resolved first, refused if any address is
  * private, loopback, link-local or otherwise reserved, and curl is pinned to the checked addresses (CURLOPT_RESOLVE)
  * so DNS cannot change between the check and the connect.
+ *
+ * The one exception to https is a local file written by root under local_dir (the AWS prefix lists that
+ * x-aws-sync writes, section 13): exact name pattern, no symlinks, root-owned and not group or world writable.
  */
 class x_carrier_acl_fetch {
 
@@ -30,6 +33,8 @@ class x_carrier_acl_fetch {
 	const max_redirects = 3;
 	const connect_timeout = 10;
 	const timeout = 30;
+	const local_dir = '/var/lib/x_carrier_acl/aws';
+	const local_pattern = '#^file:///var/lib/x_carrier_acl/aws/(telnyx-[a-z0-9-]{1,48}\.json)$#';
 
 	/**
 	 * @param string $url     feed URL
@@ -44,6 +49,9 @@ class x_carrier_acl_fetch {
 			'etag' => null, 'last_modified' => null, 'content_type' => null, 'error' => null, 'tls_subject' => null,
 			'url' => $url,
 		];
+		if (str_starts_with($url, 'file:')) {
+			return $this->fetch_local($url, $options, $result);
+		}
 		if (!function_exists('curl_init')) {
 			$result['error'] = 'php curl extension is not installed';
 			return $result;
@@ -58,6 +66,10 @@ class x_carrier_acl_fetch {
 		}
 
 		for ($hop = 0; $hop <= self::max_redirects; $hop++) {
+			if (str_starts_with($url, 'file:')) {
+				$result['error'] = 'redirect to a local file is not allowed';
+				return $result;
+			}
 			$error = self::check_url($url);
 			if ($error !== null) {
 				$result['error'] = $error;
@@ -117,6 +129,57 @@ class x_carrier_acl_fetch {
 			return $result;
 		}
 		$result['error'] = 'too many redirects';
+		return $result;
+	}
+
+	/**
+	 * Read a local feed file. The content hash is the etag, so an unchanged file is "not modified".
+	 */
+	private function fetch_local(string $url, array $options, array $result): array {
+		$error = self::check_url($url);
+		if ($error !== null) {
+			$result['error'] = $error;
+			return $result;
+		}
+		preg_match(self::local_pattern, $url, $m);
+		$path = self::local_dir.'/'.$m[1];
+		foreach ([self::local_dir, $path] as $check) {
+			$stat = @lstat($check);
+			if ($stat === false) {
+				$result['error'] = $check.' does not exist';
+				return $result;
+			}
+			if (($stat['mode'] & 0170000) === 0120000 || $stat['uid'] !== 0 || ($stat['mode'] & 0022) !== 0) {
+				$result['error'] = $check.' must be root-owned, not a symlink, and not group or world writable';
+				return $result;
+			}
+		}
+		if (($stat['mode'] & 0170000) !== 0100000) {
+			$result['error'] = $path.' is not a regular file';
+			return $result;
+		}
+		$body = @file_get_contents($path, false, null, 0, self::max_bytes + 1);
+		if ($body === false || $body === '') {
+			$result['error'] = 'cannot read '.$path;
+			return $result;
+		}
+		if (strlen($body) > self::max_bytes) {
+			$result['error'] = 'body larger than '.self::max_bytes.' bytes';
+			return $result;
+		}
+		$sha256 = hash('sha256', $body);
+		$result['ok'] = true;
+		$result['status'] = 200;
+		$result['content_type'] = 'application/json';
+		$result['etag'] = $sha256;
+		if (($options['etag'] ?? '') === $sha256) {
+			$result['status'] = 304;
+			$result['not_modified'] = true;
+			return $result;
+		}
+		$result['body'] = $body;
+		$result['bytes'] = strlen($body);
+		$result['sha256'] = $sha256;
 		return $result;
 	}
 
@@ -226,6 +289,9 @@ class x_carrier_acl_fetch {
 	public static function check_url(string $url): ?string {
 		if (strlen($url) > 2048 || preg_match('/[\x00-\x20\x7f]/', $url)) {
 			return 'invalid URL';
+		}
+		if (str_starts_with($url, 'file:')) {
+			return preg_match(self::local_pattern, $url) === 1 ? null : 'local files are limited to '.self::local_dir.'/telnyx-*.json';
 		}
 		$parts = parse_url($url);
 		if (!is_array($parts) || strtolower($parts['scheme'] ?? '') !== 'https') {
