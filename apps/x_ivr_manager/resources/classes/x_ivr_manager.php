@@ -244,9 +244,22 @@ class x_ivr_manager {
 	 * @return bool
 	 */
 	public function select_greeting(array $ivr_menu, $type, $value) {
+		$this->message = null;
 		$value = (string)$value;
 		if (strpos($value, 'phrase:') === 0) {
-			if ($this->get_phrase(substr($value, 7)) === null) {
+			$phrase = $this->get_phrase(substr($value, 7));
+			if ($phrase === null) {
+				$this->message = 'message-greeting_invalid';
+				return false;
+			}
+			//languages.lua only plays enabled phrases in the channel language, anything else is silence
+			$enabled = $phrase['phrase_enabled'];
+			if (!($enabled === true || $enabled === 'true' || $enabled === 1 || $enabled === '1')) {
+				$this->message = 'message-phrase_disabled';
+				return false;
+			}
+			if ($phrase['phrase_language'] !== $this->phrase_language($ivr_menu)) {
+				$this->message = 'message-phrase_language_mismatch';
 				return false;
 			}
 		}
@@ -259,6 +272,7 @@ class x_ivr_manager {
 				}
 			}
 			if (!$found || $value !== basename($value)) {
+				$this->message = 'message-greeting_invalid';
 				return false;
 			}
 		}
@@ -275,9 +289,9 @@ class x_ivr_manager {
 	public function phrase_language(array $ivr_menu) {
 		$language = (string)($ivr_menu['ivr_menu_language'] ?? '');
 		$language = explode('/', $language)[0];
+		//without one the IVR does not set default_language, and the switch default is en
 		if ($language === '') {
-			$language = (string)$this->settings->get('domain', 'language', 'en');
-			$language = explode('-', $language)[0];
+			$language = 'en';
 		}
 		return preg_match('/^[a-z]{2,3}$/', $language) ? $language : 'en';
 	}
@@ -305,8 +319,8 @@ class x_ivr_manager {
 		}
 
 		//name: upstream phrase names have no spaces or quotes (phrase_edit.php)
-		$phrase_name = str_replace([' ', "'", '"', '`'], ['_', '', '', ''], trim((string)($phrase['phrase_name'] ?? '')));
-		$phrase_name = substr($phrase_name, 0, 255);
+		$phrase_name = preg_replace('/[^A-Za-z0-9_.\-]+/', '_', trim((string)($phrase['phrase_name'] ?? '')));
+		$phrase_name = trim(substr($phrase_name, 0, 100), '_');
 		if ($phrase_name === '') {
 			$this->message = 'message-phrase_name_required';
 			return false;
@@ -343,6 +357,15 @@ class x_ivr_manager {
 		}
 		if (count($parts) > 20) {
 			$this->message = 'message-phrase_too_many_parts';
+			return false;
+		}
+		//keep the whole request well inside the web server timeout
+		$text_bytes = 0;
+		foreach ($parts as $part) {
+			$text_bytes += $part['type'] === 'text' ? strlen($part['value']) : 0;
+		}
+		if ($text_bytes > x_ivr_manager_google_tts::max_text_bytes) {
+			$this->message = 'message-phrase_text_invalid';
 			return false;
 		}
 		$has_text = false;
@@ -443,10 +466,9 @@ class x_ivr_manager {
 			return false;
 		}
 
-		//clear the phrase cache, the key languages.lua uses and the one phrase_edit.php clears
+		//clear the phrase cache (cache::delete turns : into ., so this is also the key phrase_edit.php clears)
 		$cache = new cache;
 		$cache->delete('languages:'.$language.':'.$phrase_uuid);
-		$cache->delete('languages:'.$language.'.'.$phrase_uuid);
 
 		//set the greeting
 		$greeting_type = $phrase['greeting_type'] ?? '';

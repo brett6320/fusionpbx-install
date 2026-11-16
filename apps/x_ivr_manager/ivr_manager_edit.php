@@ -78,7 +78,7 @@
 
 //phrases are built with Google Text-to-Speech, independent of the speech app
 	$google_tts = new x_ivr_manager_google_tts($settings);
-	$phrase_allowed = permission_exists('x_ivr_manager_phrase') && x_ivr_manager::phrases_installed();
+	$phrase_allowed = permission_exists('x_ivr_manager_phrase') && permission_exists('x_ivr_manager_edit') && x_ivr_manager::phrases_installed();
 	$phrase_enabled = $phrase_allowed && $google_tts->enabled();
 
 //process the http post data
@@ -176,7 +176,7 @@
 					message::add($text['message-greeting_saved']);
 				}
 				else {
-					message::add($text['message-greeting_invalid'], 'negative');
+					message::add((is_string($manager->message) ? ($text[$manager->message] ?? null) : null) ?? $text['message-failed'], 'negative');
 				}
 				header('Location: '.$redirect);
 				exit;
@@ -199,11 +199,17 @@
 						$phrase['parts'][] = ['type' => (string)$part_type, 'value' => (string)($part_values[$i] ?? '')];
 					}
 				}
-				if ($manager->create_phrase($ivr_menu, $phrase) !== false) {
+				//synthesis can take a while: release the session lock so other tabs keep working, then reopen it
+				//for the message. The access token is not cached in this request.
+				@set_time_limit(120);
+				session_write_close();
+				$created = $manager->create_phrase($ivr_menu, $phrase);
+				session_start();
+				if ($created !== false) {
 					message::add($text['message-phrase_saved']);
 				}
 				else {
-					message::add($text[$manager->message] ?? $text['message-phrase_save_failed'], 'negative');
+					message::add((is_string($manager->message) ? ($text[$manager->message] ?? null) : null) ?? $text['message-phrase_save_failed'], 'negative');
 				}
 				header('Location: '.$redirect);
 				exit;
@@ -533,7 +539,7 @@
 	}
 
 	//new phrase with google text to speech
-	if ($phrase_allowed && !$phrase_enabled && permission_exists('x_ivr_manager_edit')) {
+	if ($phrase_allowed && !$phrase_enabled) {
 		echo "<br />\n";
 		echo "<b>".$text['header-new_phrase']."</b><br />\n";
 		echo $text['description-phrase_tts_setup']."<br />\n";
@@ -619,7 +625,7 @@
 		echo "		var input;\n";
 		echo "		if (type === 'text') {\n";
 		echo "			input = document.createElement('textarea');\n";
-		echo "			input.className = 'formfld'; input.maxLength = 5000; input.required = true;\n";
+		echo "			input.className = 'formfld'; input.required = true;\n";
 		echo "			input.style.width = '100%'; input.style.maxWidth = '450px'; input.style.height = '70px';\n";
 		echo "		}\n";
 		echo "		else {\n";

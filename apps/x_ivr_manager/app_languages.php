@@ -204,7 +204,7 @@ $text['message-phrase_name_required']['en-us'] = "A phrase name is required.";
 
 $text['message-phrase_voice_invalid']['en-us'] = "Choose a valid voice.";
 
-$text['message-phrase_text_invalid']['en-us'] = "Each text part must be at most 5000 bytes.";
+$text['message-phrase_text_invalid']['en-us'] = "The text of a phrase can be at most 5000 bytes in total.";
 
 $text['message-phrase_text_required']['en-us'] = "Add at least one text part.";
 
@@ -217,5 +217,9 @@ $text['message-phrase_save_failed']['en-us'] = "The phrase could not be saved.";
 $text['message-phrase_greeting_failed']['en-us'] = "The phrase was created, but the greeting could not be set.";
 
 $text['button-remove_part']['en-us'] = "Remove";
+
+$text['message-phrase_disabled']['en-us'] = "This phrase is disabled. Enable it in Phrases first.";
+
+$text['message-phrase_language_mismatch']['en-us'] = "This phrase is in a different language from the IVR menu, so callers would hear nothing.";
 
 ?>
