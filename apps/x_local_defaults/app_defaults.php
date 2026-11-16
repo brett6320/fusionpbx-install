@@ -137,6 +137,45 @@ if ($domains_processed == 1) {
 		}
 		unset($email_templates, $email_template, $email_template_uuid, $row);
 
+	//check the outbound codec marker
+		$sql = "select count(*) from v_default_settings ";
+		$sql .= "where default_setting_category = 'x_install' ";
+		$sql .= "and default_setting_subcategory = 'outbound_codecs_initialized' ";
+		$outbound_codecs_initialized = $database->select($sql, null, 'column');
+		unset($sql);
+
+	//offer G.722 first on calls out to gateways (the sofia profiles' outbound-codec-prefs); upstream ships
+	//outbound_codec_prefs=PCMU,PCMA. The variable is changed only while it still has upstream's value, so an
+	//admin's choice is kept. app/vars (alphabetically earlier) creates the row and writes vars.xml before this
+	//runs; the marker is only set once the row exists, and vars.xml is written again after a change.
+		if (empty($outbound_codecs_initialized)) {
+			$sql = "select var_uuid, var_value from v_vars where var_name = 'outbound_codec_prefs' ";
+			$outbound_codecs = $database->select($sql, null, 'all');
+			unset($sql);
+			if (is_array($outbound_codecs) && count($outbound_codecs) > 0) {
+				$changed = false;
+				foreach ($outbound_codecs as $row) {
+					if (str_replace(' ', '', (string) $row['var_value']) === 'PCMU,PCMA') {
+						$sql = "update v_vars set var_value = 'G722,PCMU,PCMA', update_date = now() where var_uuid = :var_uuid ";
+						$database->execute($sql, ['var_uuid' => $row['var_uuid']]);
+						unset($sql);
+						$changed = true;
+					}
+				}
+				if ($changed && function_exists('save_var_xml')) {
+					save_var_xml();
+				}
+
+				$sql = "insert into v_default_settings ";
+				$sql .= "(default_setting_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled, default_setting_description) ";
+				$sql .= "values (:uuid, 'x_install', 'outbound_codecs_initialized', 'boolean', 'true', false, 'Marker: outbound_codec_prefs was set to G722,PCMU,PCMA at install. Do not remove.') ";
+				$parameters['uuid'] = uuid();
+				$database->execute($sql, $parameters);
+				unset($sql, $parameters, $changed);
+			}
+			unset($outbound_codecs, $row);
+		}
+
 }
 
 ?>

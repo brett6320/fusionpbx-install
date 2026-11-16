@@ -94,6 +94,18 @@ A default install has a self-signed certificate, which most phones reject.
 Install a trusted certificate (upstream ships a Let's Encrypt script) or turn
 off certificate checks on the phones.
 
+## Outbound codecs
+
+Calls out to gateways (carriers) offer **G722, PCMU, PCMA**, in that order: the
+installer sets the FreeSWITCH variable `outbound_codec_prefs` (**Advanced >
+Variables**, category Codecs), which upstream ships as `PCMU,PCMA`. It is
+changed once, and only while it still has upstream's value, so an admin's
+choice is kept on upgrade. On a host installed before this change,
+`upgrade.sh` makes the change, but FreeSWITCH reads it only when it starts:
+restart it (`systemctl restart freeswitch`, which drops active calls) at a
+quiet time. A carrier's **Codec Preferences** (Carrier Credentials) override
+this for that carrier's gateways.
+
 ## Phone codec order
 
 One codec order for every phone: **Advanced > Default Settings > Provision >
