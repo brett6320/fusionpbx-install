@@ -122,6 +122,62 @@ skips codecs the phone lacks (for example OPUS on a DP750). Upstream Yealink
 templates keep their own `yealink_codec_*` settings. Phones pick up a
 change at their next provisioning.
 
+## Phone wallpapers
+
+**Accounts > Provision Templates > Wallpapers** sets one wallpaper
+per screen size for the phones of a domain. Upload any PNG or JPEG (up to
+`x_provision_overlay.asset_max_bytes`, default 2 MB, and 4096 x 4096 pixels):
+it is scaled to cover the size, the center is kept, transparency becomes
+white, and it is converted to what each phone takes (baseline JPEG, or PNG for
+Snom) within the phone's file size limit. The page lists the models of each
+size and marks the domain's devices. Superadmins also get **System Defaults**:
+images used by every domain that has none of its own for that size. Without
+either, phones keep their own default wallpaper.
+
+Supported in this version (templates that already read a wallpaper URL from a
+setting): Yealink T29G, T32G, T33G, T34W, T38G, T44W, T46G/S/U, T48G/S/U, T49G,
+T52S, T54S/W, T56A, T57W, T58A/V/W, T73U/W, T74U/W, T77U, T85W, T87W, T88V/W,
+VP530, CP925, CP960, CP965, AX83H, AX86R; Snom D375, D385, D735, D765, D785,
+D862, D865; Grandstream GXP2130/2135/2140/2160/2170, GXV3480, WP820; Avaya
+J139, J179, J189; Polycom VVX450 (`polycom/vvx450` and `poly/poly-vvx-450`).
+Mixed templates (`yealink/t2x`, `t4x`, `t5x`, `polycom/5.x`, `6.x`,
+`grandstream/grp261x`) and other models are not covered; they need a template
+override. Sizes come from vendor documentation and have not all been tested
+on hardware.
+
+How phones get it: every 2 minutes (`x-provision-wallpapers.timer`, and right
+after a change on the page) each enabled device on a supported template gets
+device settings with the image URL
+(`http://<domain>/provision-assets/wp-<size>-<hash>.<ext>`), visible under
+the device's settings and labelled as managed. A phone picks the wallpaper up
+the next time it fetches its configuration; some models only do so at boot.
+
+- **A value set elsewhere wins**: a domain setting, a device profile setting or
+  a device setting of the same name (for example
+  `provision.yealink_t46s_wallpaper`). Such devices are listed on the page as
+  "uses its own wallpaper"; remove that value to switch them to the managed
+  one. Domain settings written by the older "apply to vendor settings" button
+  count as such a value.
+- **To opt one device out**, disable its wallpaper rows in the device's
+  settings. Deleting them is not an opt-out: they are written again. Changing
+  a value makes the row yours; it is then left alone.
+- Devices that use an alternate device are skipped. If an upgrade or a
+  template override stops a template from reading its wallpaper settings, its
+  devices are unlinked and the page shows a warning.
+- A new image gets a new file name, so phones download it again. Replaced or
+  removed files stay downloadable for a day, then the daily overlay job deletes
+  them, together with the images of deleted domains.
+- Yealink phones keep downloaded wallpapers in their own storage (the
+  templates ask the phone to keep 2 MB free); removing an image here does not
+  delete it from the phones, and each new image adds a file.
+
+The images are under `/var/lib/fusionpbx/provision_overlay/assets/` (per
+domain, and `global/` for the system defaults), which backups include; after a
+restore the 2-minute sync rewrites the device settings from them. To run the
+sync by hand: `runuser -u www-data -- php
+/var/www/fusionpbx/app/x_provision_overlay/resources/cli/wallpapers.php --sync
+[--domain <uuid>]`.
+
 ## Theme
 
 The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,

@@ -124,6 +124,7 @@
 	echo "	<div class='heading'><b>".$text['header-x_provision_overlay_assets']."</b></div>\n";
 	echo "	<div class='actions'>\n";
 	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$settings->get('theme', 'button_icon_back'),'link'=>'x_provision_overlay.php']);
+	echo button::create(['type'=>'button','label'=>$text['button-wallpapers'],'icon'=>'image','link'=>'x_provision_overlay_wallpapers.php']);
 	echo "	</div>\n";
 	echo "	<div style='clear: both;'></div>\n";
 	echo "</div>\n";

@@ -22,6 +22,7 @@
 		global    /var/lib/fusionpbx/provision_overlay/global/<vendor>/<model>/<file>
 		domain    /var/lib/fusionpbx/provision_overlay/domains/<domain_uuid>/<vendor>/<model>/<file>
 		assets    /var/lib/fusionpbx/provision_overlay/assets/<domain_uuid>/<file>
+		          (wp-* names are phone wallpapers, recorded in .wallpapers.json; see provision_wallpapers.php)
 		merged    /var/lib/fusionpbx/provision_overlay/merged/<build-id>/   (generated)
 		link      /usr/share/fusionpbx/templates/provision -> .../merged/current
 
@@ -67,13 +68,13 @@ class provision_overlay {
 		'image/gif' => 'gif',
 	];
 
-	//vendor settings that take an image url and may be written per domain by "apply to vendor settings"
-	const vendor_setting_patterns = [
-		'/^polycom_background_url$/',
-		'/^grandstream_wallpaper_url$/',
-		'/^poly_obi_logo_[a-z0-9]+$/',
-		'/^yealink_[a-z0-9]+_wallpaper$/',
-	];
+	//vendor settings that take an image url and may be written per domain by "apply to vendor settings";
+	//wallpaper settings (polycom_background_url, grandstream_wallpaper_url, poly_obi_logo_*, yealink_*_wallpaper)
+	//are linked per device by the wallpapers page instead (provision_wallpapers.php)
+	const vendor_setting_patterns = [];
+
+	//asset names starting with this prefix are reserved for wallpapers
+	const wallpaper_prefix = 'wp-';
 
 	/**
 	 * @var database|null
@@ -212,7 +213,8 @@ class provision_overlay {
 	}
 
 	public static function valid_asset_name(string $name): bool {
-		return preg_match(self::asset_name_pattern, $name) === 1 && strpos($name, '..') === false;
+		return preg_match(self::asset_name_pattern, $name) === 1 && strpos($name, '..') === false
+			&& strpos($name, self::wallpaper_prefix) !== 0;
 	}
 
 	public static function valid_vendor_setting(string $subcategory): bool {
@@ -1516,7 +1518,7 @@ class provision_overlay {
 
 	/**
 	 * Builds a stored name from a requested name and the sniffed extension. Dots in the stem become
-	 * underscores, so "a.php.png" is stored as "a_php.png".
+	 * underscores, so "a.php.png" is stored as "a_php.png"; "wp-a.png" is stored as "wp_a.png".
 	 */
 	public static function asset_name(string $requested, string $extension): string {
 		$stem = strtolower(trim($requested));
@@ -1527,6 +1529,10 @@ class provision_overlay {
 		}
 		$stem = preg_replace('/[^a-z0-9_-]+/', '_', $stem);
 		$stem = ltrim($stem, '_-');
+		//the wp- prefix is reserved for wallpapers
+		if (strpos($stem, self::wallpaper_prefix) === 0) {
+			$stem = 'wp_'.substr($stem, strlen(self::wallpaper_prefix));
+		}
 		$stem = substr($stem, 0, 59);
 		if ($stem === '') {
 			$stem = 'asset';

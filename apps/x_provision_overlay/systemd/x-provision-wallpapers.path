@@ -1,0 +1,9 @@
+[Unit]
+Description=Link phones to their wallpaper when the wallpapers page asks for it (system default changed)
+
+[Path]
+PathExists=/var/lib/fusionpbx/provision_overlay/.wallpapers-sync.request
+Unit=x-provision-wallpapers.service
+
+[Install]
+WantedBy=multi-user.target
