@@ -62,6 +62,20 @@ done
 echo "PASS  optional apps update as www-data"
 docker exec -i "$name" bash -s < test/checks.sh
 
+echo "== Amazon Time Sync Service on EC2 only"
+docker exec -e X_IS_EC2=1 "$name" bash /usr/src/x-install/resources/timesync.sh >/dev/null
+docker exec "$name" grep -qx 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4' /etc/chrony/sources.d/x-aws-time.sources || { echo "FAIL  Amazon time source not written on EC2"; exit 1; }
+grep -q 169.254.169.123 <<<"$(docker exec "$name" chronyc -n sources)" || { echo "FAIL  chrony did not load the Amazon time source"; exit 1; }
+#an admin's own line for it wins
+docker exec "$name" bash -c 'echo "server 169.254.169.123 iburst" > /etc/chrony/sources.d/aws.sources'
+docker exec -e X_IS_EC2=1 "$name" bash /usr/src/x-install/resources/timesync.sh >/dev/null
+docker exec "$name" test ! -e /etc/chrony/sources.d/x-aws-time.sources || { echo "FAIL  Amazon time source duplicated"; exit 1; }
+docker exec "$name" rm -f /etc/chrony/sources.d/aws.sources
+docker exec -e X_IS_EC2=1 "$name" bash /usr/src/x-install/resources/timesync.sh >/dev/null
+docker exec "$name" bash /usr/src/x-install/resources/timesync.sh >/dev/null
+docker exec "$name" test ! -e /etc/chrony/sources.d/x-aws-time.sources || { echo "FAIL  Amazon time source kept off EC2"; exit 1; }
+echo "PASS  Amazon Time Sync Service on EC2 only"
+
 echo "== AWS: prefix list feeds and the Elastic IP as external address"
 docker exec "$name" bash -c 'cat > /etc/default/fusionpbx-aws <<CONF
 AWS_REGION=us-east-1
