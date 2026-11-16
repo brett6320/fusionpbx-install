@@ -8,7 +8,7 @@
 # branch, so core is pinned to a commit on the stable branch.
 fusionpbx_repo=https://github.com/fusionpbx/fusionpbx.git
 fusionpbx_branch=5.6
-fusionpbx_commit=deccb3fc1e2e1cb108475d57b01a64b9db2d7c2a
+fusionpbx_commit=58ca4e9cbdcb6fc22b78b7f3acfd3b226cae8d45
 fusionpbx_installer_repo=https://github.com/fusionpbx/fusionpbx-install.sh.git
 fusionpbx_installer_commit=e9b56d71f8b65a59df9598c29649b0fb6ff959fb
 fusionpbx_installer_dir=/usr/src/fusionpbx-install.sh
