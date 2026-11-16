@@ -214,6 +214,26 @@ already uses (an existing schedule keeps its number), and lists the inbound
 routes pointing at the schedule, from Destinations and Dialplan > Inbound
 Routes.
 
+### Creating IVR menus
+
+**Add** in IVR Manager (permission `x_ivr_manager_add`, admin and superadmin)
+creates an IVR menu from a name, an extension and a description, with
+upstream's defaults for a new menu (including `ivr_menu > default_ringback`),
+then opens it in IVR Manager to set the greeting, options and schedule. Until a
+greeting is set the menu plays nothing and ends after its timeouts.
+
+The extension is filled in with a random, unused 22 digit number: nobody needs
+to dial it, since calls reach the menu from Inbound Routes, a schedule or
+another menu. If the menu's own dialplan entry is skipped (the menu is
+disabled, or an outbound route is ordered before it), a call to its number
+falls through to the outbound routes, and a 12 to 20 digit number matches the
+stock International route and goes out to a carrier. 22 digits is longer than
+every fixed length stock pattern (the longest, `^9(\d{12,20})$`, takes up to 21
+digits), and any number an enabled outbound route of the domain (or a global
+one) matches is refused, which covers open ended patterns such as a custom
+prefix `^9(\d*)$`. Any other unused number can be entered instead.
+`limit > ivr_menus` applies as in the IVR Menu editor.
+
 ## Email templates
 
 The installer rewords upstream's English email templates (voicemail,

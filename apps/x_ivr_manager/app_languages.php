@@ -256,4 +256,30 @@ $text['message-greeting_in_use']['en-us'] = "Not deleted, still in use by: %s. R
 
 $text['message-greeting_delete_failed']['en-us'] = "The greeting could not be deleted.";
 
+$text['title-ivr_manager_add']['en-us'] = "Add IVR Menu";
+
+$text['description-ivr_manager_add']['en-us'] = "Create an IVR menu, then set its greetings, options and schedule in IVR Manager.";
+
+$text['description-ivr_menu_name']['en-us'] = "The name of the IVR menu, shown in destination lists.";
+
+$text['description-ivr_menu_extension']['en-us'] = "A random, unused 22 digit number is filled in that no outbound route matches. Nobody needs to dial it: send calls to the menu from Inbound Routes, a schedule or another menu. Any other unused number (digits only) works as well.";
+
+$text['message-ivr_created']['en-us'] = "IVR menu created. Set its greeting and options below.";
+
+$text['message-ivr_name_invalid']['en-us'] = "Enter a name for the IVR menu (up to 255 characters).";
+
+$text['message-ivr_extension_invalid']['en-us'] = "The extension must contain digits only (up to 32).";
+
+$text['message-ivr_description_invalid']['en-us'] = "The description can be up to 255 characters.";
+
+$text['message-ivr_extension_in_use']['en-us'] = "Extension %s is already used by %s. Choose an unused number.";
+
+$text['message-ivr_extension_routable']['en-us'] = "Extension %s matches the outbound route %s, so calls to the menu could go out to a carrier while it is disabled. Choose another number.";
+
+$text['message-ivr_limit']['en-us'] = "The maximum number of IVR menus for this domain has been reached.";
+
+$text['message-ivr_create_failed']['en-us'] = "The IVR menu could not be created.";
+
+$text['message-ivr_extension_generate_failed']['en-us'] = "No number could be generated, enter one.";
+
 ?>
