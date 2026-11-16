@@ -32,7 +32,10 @@ if [ "${1:-}" = --optional ]; then
 	#upgrade.php reports a failed pull in its output but always exits 0
 	out=$( (cd "$fusionpbx_dir" && runuser -u www-data -- php core/upgrade/upgrade.php --optional) 2>&1 ) || true
 	printf '%s\n' "$out"
-	if grep -qE 'ERROR:|fatal:|dubious ownership|Permission denied' <<<"$out"; then
+	#upstream's git_pull() adds each app to www-data's global safe.directory, which fails because www-data cannot
+	#write /var/www/.gitconfig. www-data owns the checkouts, so git does not need it: ignore only that error
+	if grep -vE "^error: could not lock config file /var/www/\.gitconfig: Permission denied$" <<<"$out" \
+		| grep -qE 'ERROR:|fatal:|dubious ownership|Permission denied'; then
 		die "An optional app did not update (see above). Nothing else was changed."
 	fi
 	fusionpbx_upgrade --schema
