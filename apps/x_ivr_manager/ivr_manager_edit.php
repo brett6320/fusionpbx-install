@@ -76,6 +76,11 @@
 	$speech_engine = $settings->get('speech', 'engine', '');
 	$tts_enabled = $speech_enabled && !empty($speech_engine) && permission_exists('x_ivr_manager_tts');
 
+//phrases are built with Google Text-to-Speech, independent of the speech app
+	$google_tts = new x_ivr_manager_google_tts($settings);
+	$phrase_allowed = permission_exists('x_ivr_manager_phrase') && permission_exists('x_ivr_manager_edit') && x_ivr_manager::phrases_installed();
+	$phrase_enabled = $phrase_allowed && $google_tts->enabled();
+
 //process the http post data
 	if (!empty($post_action)) {
 
@@ -157,6 +162,54 @@
 				}
 				else {
 					message::add($text['message-tts_failed'], 'negative');
+				}
+				header('Location: '.$redirect);
+				exit;
+
+			//set a greeting to an existing recording or phrase
+			case 'greeting_select':
+				if (!permission_exists('x_ivr_manager_edit')) {
+					echo "access denied";
+					exit;
+				}
+				if ($manager->select_greeting($ivr_menu, $greeting_type, $_POST['greeting_value'] ?? '')) {
+					message::add($text['message-greeting_saved']);
+				}
+				else {
+					message::add((is_string($manager->message) ? ($text[$manager->message] ?? null) : null) ?? $text['message-failed'], 'negative');
+				}
+				header('Location: '.$redirect);
+				exit;
+
+			//create a phrase with Google Text-to-Speech
+			case 'phrase_create':
+				if (!$phrase_enabled) {
+					echo "access denied";
+					exit;
+				}
+				$phrase['phrase_name'] = $_POST['phrase_name'] ?? '';
+				$phrase['voice'] = $_POST['phrase_voice'] ?? '';
+				$phrase['speed'] = $_POST['phrase_speed'] ?? '1.0';
+				$phrase['greeting_type'] = $_POST['phrase_greeting_type'] ?? '';
+				$phrase['parts'] = [];
+				$part_types = $_POST['part_type'] ?? [];
+				$part_values = $_POST['part_value'] ?? [];
+				if (is_array($part_types) && is_array($part_values)) {
+					foreach (array_slice($part_types, 0, 21, true) as $i => $part_type) {
+						$phrase['parts'][] = ['type' => (string)$part_type, 'value' => (string)($part_values[$i] ?? '')];
+					}
+				}
+				//synthesis can take a while: release the session lock so other tabs keep working, then reopen it
+				//for the message. The access token is not cached in this request.
+				@set_time_limit(120);
+				session_write_close();
+				$created = $manager->create_phrase($ivr_menu, $phrase);
+				session_start();
+				if ($created !== false) {
+					message::add($text['message-phrase_saved']);
+				}
+				else {
+					message::add((is_string($manager->message) ? ($text[$manager->message] ?? null) : null) ?? $text['message-phrase_save_failed'], 'negative');
 				}
 				header('Location: '.$redirect);
 				exit;
@@ -258,6 +311,30 @@
 		}
 		else if (file_exists($recording_path.'/'.$filename)) {
 			$greetings[$type]['play_url'] = '../recordings/recordings.php?action=download&type=rec&filename='.urlencode($filename);
+		}
+	}
+
+//recordings and phrases for the greeting picker, and phrase names for the current greetings
+	$domain_recordings = permission_exists('x_ivr_manager_edit') ? $manager->get_recordings() : [];
+	$domain_phrases = $manager->get_phrases();
+	$phrase_names = [];
+	foreach ($domain_phrases as $row) {
+		$phrase_names[$row['phrase_uuid']] = $row['phrase_name'];
+	}
+	foreach (['greet_long', 'greet_short'] as $type) {
+		$value = $greetings[$type]['value'];
+		$greetings[$type]['label'] = $value;
+		if (strpos($value, 'phrase:') === 0 && isset($phrase_names[substr($value, 7)])) {
+			$greetings[$type]['label'] = $text['label-phrase'].': '.$phrase_names[substr($value, 7)];
+		}
+	}
+
+//google voices for new phrases, the configured default first
+	if ($phrase_enabled) {
+		$phrase_voices = $google_tts->voices();
+		$phrase_voice_default = $google_tts->default_voice();
+		if (x_ivr_manager_google_tts::valid_voice($phrase_voice_default) && !isset($phrase_voices[$phrase_voice_default])) {
+			$phrase_voices = [$phrase_voice_default => $phrase_voice_default] + $phrase_voices;
 		}
 	}
 
@@ -401,7 +478,7 @@
 		echo "<tr>\n";
 		echo "<td width='30%' class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-'.$type]."</td>\n";
 		echo "<td width='70%' class='vtable' align='left'>\n";
-		echo "	".escape(!empty($greetings[$type]['value']) ? $greetings[$type]['value'] : $text['label-not_set'])."\n";
+		echo "	".escape(!empty($greetings[$type]['label']) ? $greetings[$type]['label'] : $text['label-not_set'])."\n";
 		if (!empty($greetings[$type]['play_url'])) {
 			echo "	<br /><audio controls preload='none' src='".escape($greetings[$type]['play_url'])."' style='margin-top: 5px; max-width: 100%;'></audio>\n";
 		}
@@ -418,6 +495,156 @@
 		$html .= "</select>\n";
 		return $html;
 	};
+
+	//choose an existing recording or phrase
+	if (permission_exists('x_ivr_manager_edit') && (!empty($domain_recordings) || !empty($domain_phrases))) {
+		echo "<br />\n";
+		echo "<form name='frm_greeting' id='frm_greeting' method='post'>\n";
+		echo "<b>".$text['header-select_greeting']."</b><br />\n";
+		echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+		echo "<tr>\n";
+		echo "<td width='30%' class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-target']."</td>\n";
+		echo "<td width='70%' class='vtable' align='left'>".$greeting_type_select('select_greeting_type')."</td>\n";
+		echo "</tr>\n";
+		echo "<tr>\n";
+		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-greeting']."</td>\n";
+		echo "<td class='vtable' align='left'>\n";
+		echo "	<select class='formfld' name='greeting_value' required='required'>\n";
+		echo "		<option value=''></option>\n";
+		if (!empty($domain_recordings)) {
+			echo "		<optgroup label=\"".escape($text['label-recordings'])."\">\n";
+			foreach ($domain_recordings as $row) {
+				echo "			<option value=\"".escape($row['recording_filename'])."\">".escape($row['recording_name'])."</option>\n";
+			}
+			echo "		</optgroup>\n";
+		}
+		if (!empty($domain_phrases)) {
+			echo "		<optgroup label=\"".escape($text['label-phrases'])."\">\n";
+			foreach ($domain_phrases as $row) {
+				$phrase_disabled = !($row['phrase_enabled'] === true || $row['phrase_enabled'] === 'true' || $row['phrase_enabled'] === 1 || $row['phrase_enabled'] === '1');
+				echo "			<option value=\"phrase:".escape($row['phrase_uuid'])."\">".escape($row['phrase_name'].' ('.$row['phrase_language'].')'.($phrase_disabled ? ' - '.$text['label-disabled'] : ''))."</option>\n";
+			}
+			echo "		</optgroup>\n";
+		}
+		echo "	</select>\n";
+		echo "	<br />".$text['description-select_greeting']."<br />\n";
+		echo button::create(['type'=>'submit','label'=>$text['button-set_greeting'],'icon'=>$settings->get('theme', 'button_icon_save'),'id'=>'btn_greeting_select','style'=>'margin-top: 5px;']);
+		echo "</td>\n";
+		echo "</tr>\n";
+		echo "</table>\n";
+		echo "<input type='hidden' name='action' value='greeting_select'>\n";
+		echo "<input type='hidden' name='id' value='".escape($ivr_menu_uuid)."'>\n";
+		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+		echo "</form>\n";
+	}
+
+	//new phrase with google text to speech
+	if ($phrase_allowed && !$phrase_enabled) {
+		echo "<br />\n";
+		echo "<b>".$text['header-new_phrase']."</b><br />\n";
+		echo $text['description-phrase_tts_setup']."<br />\n";
+	}
+	if ($phrase_enabled) {
+		echo "<br />\n";
+		echo "<form name='frm_phrase' id='frm_phrase' method='post'>\n";
+		echo "<b>".$text['header-new_phrase']."</b><br />\n";
+		echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+		echo "<tr>\n";
+		echo "<td width='30%' class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-target']."</td>\n";
+		echo "<td width='70%' class='vtable' align='left'>\n";
+		echo "	<select class='formfld' name='phrase_greeting_type'>\n";
+		echo "		<option value='greet_long'>".$text['label-greet_long']."</option>\n";
+		echo "		<option value='greet_short'>".$text['label-greet_short']."</option>\n";
+		echo "		<option value=''>".$text['label-target_none']."</option>\n";
+		echo "	</select>\n";
+		echo "</td>\n";
+		echo "</tr>\n";
+		echo "<tr>\n";
+		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-phrase_name']."</td>\n";
+		echo "<td class='vtable' align='left'><input class='formfld' type='text' name='phrase_name' maxlength='255' value=\"".escape(str_replace(' ', '_', $ivr_menu['ivr_menu_name']).'_greeting')."\" required='required'></td>\n";
+		echo "</tr>\n";
+		echo "<tr>\n";
+		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-voice']."</td>\n";
+		echo "<td class='vtable' align='left'>\n";
+		if (!empty($phrase_voices)) {
+			echo "	<select class='formfld' name='phrase_voice' required='required'>\n";
+			foreach ($phrase_voices as $voice_name => $voice_label) {
+				echo "		<option value=\"".escape($voice_name)."\" ".($voice_name === $phrase_voice_default ? "selected='selected'" : '').">".escape($voice_label)."</option>\n";
+			}
+			echo "	</select>\n";
+		}
+		else {
+			echo "	<input class='formfld' type='text' name='phrase_voice' maxlength='64' value=\"".escape($phrase_voice_default)."\" required='required'>\n";
+		}
+		echo "</td>\n";
+		echo "</tr>\n";
+		echo "<tr>\n";
+		echo "<td class='vncell' valign='top' align='left' nowrap='nowrap'>".$text['label-speed']."</td>\n";
+		echo "<td class='vtable' align='left'>\n";
+		echo "	<select class='formfld' name='phrase_speed'>\n";
+		foreach (['0.75', '0.85', '0.9', '1.0', '1.1', '1.25'] as $speed_value) {
+			echo "		<option value='".$speed_value."' ".($speed_value === '1.0' ? "selected='selected'" : '').">".$speed_value."x</option>\n";
+		}
+		echo "	</select>\n";
+		echo "</td>\n";
+		echo "</tr>\n";
+		echo "<tr>\n";
+		echo "<td class='vncellreq' valign='top' align='left' nowrap='nowrap'>".$text['label-parts']."</td>\n";
+		echo "<td class='vtable' align='left'>\n";
+		echo "	<div id='phrase_parts'></div>\n";
+		echo button::create(['type'=>'button','label'=>$text['button-add_text'],'icon'=>$settings->get('theme', 'button_icon_add'),'id'=>'btn_add_text','onclick'=>"phrase_part_add('text');"]);
+		echo button::create(['type'=>'button','label'=>$text['button-add_pause'],'icon'=>$settings->get('theme', 'button_icon_add'),'id'=>'btn_add_pause','style'=>'margin-left: 5px;','onclick'=>"phrase_part_add('pause');"]);
+		echo "	<br />".$text['description-new_phrase']."<br />\n";
+		echo button::create(['type'=>'submit','label'=>$text['button-create_phrase'],'icon'=>$settings->get('theme', 'button_icon_save'),'id'=>'btn_phrase_create','style'=>'margin-top: 5px;']);
+		echo "</td>\n";
+		echo "</tr>\n";
+		echo "</table>\n";
+		echo "<input type='hidden' name='action' value='phrase_create'>\n";
+		echo "<input type='hidden' name='id' value='".escape($ivr_menu_uuid)."'>\n";
+		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
+		echo "</form>\n";
+		//parts are built with the dom, so text never passes through html
+		$phrase_text = [
+			'text' => $text['label-part_text'],
+			'pause' => $text['label-part_pause'],
+			'remove' => $text['button-remove_part'],
+		];
+		echo "<script>\n";
+		echo "	var phrase_text = ".json_encode($phrase_text, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT).";\n";
+		echo "	function phrase_part_add(type) {\n";
+		echo "		var parts = document.getElementById('phrase_parts');\n";
+		echo "		if (parts.children.length >= 20) { return; }\n";
+		echo "		var row = document.createElement('div');\n";
+		echo "		row.style.marginBottom = '6px';\n";
+		echo "		var hidden = document.createElement('input');\n";
+		echo "		hidden.type = 'hidden'; hidden.name = 'part_type[]'; hidden.value = type;\n";
+		echo "		row.appendChild(hidden);\n";
+		echo "		var label = document.createElement('div');\n";
+		echo "		label.textContent = phrase_text[type];\n";
+		echo "		row.appendChild(label);\n";
+		echo "		var input;\n";
+		echo "		if (type === 'text') {\n";
+		echo "			input = document.createElement('textarea');\n";
+		echo "			input.className = 'formfld'; input.required = true;\n";
+		echo "			input.style.width = '100%'; input.style.maxWidth = '450px'; input.style.height = '70px';\n";
+		echo "		}\n";
+		echo "		else {\n";
+		echo "			input = document.createElement('input');\n";
+		echo "			input.type = 'number'; input.className = 'formfld'; input.min = '0.1'; input.max = '10'; input.step = '0.1'; input.value = '1'; input.required = true;\n";
+		echo "			input.style.width = '90px';\n";
+		echo "		}\n";
+		echo "		input.name = 'part_value[]';\n";
+		echo "		row.appendChild(input);\n";
+		echo "		var remove = document.createElement('button');\n";
+		echo "		remove.type = 'button'; remove.className = 'btn btn-default btn-xs'; remove.style.marginLeft = '5px'; remove.style.verticalAlign = 'top';\n";
+		echo "		remove.textContent = phrase_text.remove;\n";
+		echo "		remove.onclick = function() { row.remove(); };\n";
+		echo "		row.appendChild(remove);\n";
+		echo "		parts.appendChild(row);\n";
+		echo "	}\n";
+		echo "	phrase_part_add('text');\n";
+		echo "</script>\n";
+	}
 
 	//browser recording
 	if (permission_exists('x_ivr_manager_record')) {

@@ -148,4 +148,78 @@ $text['label-confirm_replace']['en-us'] = "Replace the existing conditions";
 
 $text['message-schedule_ivr_disabled']['en-us'] = "Enable this IVR menu before scheduling it.";
 
+$text['header-select_greeting']['en-us'] = "Choose a Recording or Phrase";
+
+$text['description-select_greeting']['en-us'] = "Play an existing recording or phrase of this domain.";
+
+$text['label-greeting']['en-us'] = "Greeting";
+
+$text['label-recordings']['en-us'] = "Recordings";
+
+$text['label-phrases']['en-us'] = "Phrases";
+
+$text['label-phrase']['en-us'] = "Phrase";
+
+$text['label-disabled']['en-us'] = "disabled";
+
+$text['button-set_greeting']['en-us'] = "Set Greeting";
+
+$text['message-greeting_saved']['en-us'] = "Greeting saved.";
+
+$text['message-greeting_invalid']['en-us'] = "Choose a recording or phrase of this domain.";
+
+$text['header-new_phrase']['en-us'] = "New Phrase (Google Text-to-Speech)";
+
+$text['description-new_phrase']['en-us'] = "Each text part is spoken by Google Text-to-Speech and saved as a recording; pauses go between them. The phrase can be reused in other IVR menus and in Phrases.";
+
+$text['label-phrase_name']['en-us'] = "Phrase Name";
+
+$text['label-parts']['en-us'] = "Parts";
+
+$text['label-part_text']['en-us'] = "Text";
+
+$text['label-part_pause']['en-us'] = "Pause (seconds)";
+
+$text['label-target_none']['en-us'] = "Do not set as a greeting";
+
+$text['button-add_text']['en-us'] = "Add Text";
+
+$text['button-add_pause']['en-us'] = "Add Pause";
+
+$text['button-create_phrase']['en-us'] = "Create Phrase";
+
+$text['description-phrase_tts_setup']['en-us'] = "Google Text-to-Speech is not set up. Place a service account key file at /etc/fusionpbx/google-tts.json (readable by www-data), or set x_ivr_manager > google_tts_api_key in Default Settings.";
+
+$text['message-phrase_saved']['en-us'] = "Phrase created.";
+
+$text['message-phrase_app_missing']['en-us'] = "The Phrases app is not installed.";
+
+$text['message-phrase_tts_disabled']['en-us'] = "Google Text-to-Speech is not set up.";
+
+$text['message-phrase_tts_rejected']['en-us'] = "Google rejected the request. Check the credentials and that the Text-to-Speech API is enabled for the project.";
+
+$text['message-phrase_tts_failed']['en-us'] = "Google Text-to-Speech failed. Try again later.";
+
+$text['message-phrase_name_required']['en-us'] = "A phrase name is required.";
+
+$text['message-phrase_voice_invalid']['en-us'] = "Choose a valid voice.";
+
+$text['message-phrase_text_invalid']['en-us'] = "The text of a phrase can be at most 5000 bytes in total.";
+
+$text['message-phrase_text_required']['en-us'] = "Add at least one text part.";
+
+$text['message-phrase_part_invalid']['en-us'] = "Pauses must be between 0.1 and 10 seconds.";
+
+$text['message-phrase_too_many_parts']['en-us'] = "A phrase can have at most 20 parts.";
+
+$text['message-phrase_save_failed']['en-us'] = "The phrase could not be saved.";
+
+$text['message-phrase_greeting_failed']['en-us'] = "The phrase was created, but the greeting could not be set.";
+
+$text['button-remove_part']['en-us'] = "Remove";
+
+$text['message-phrase_disabled']['en-us'] = "This phrase is disabled. Enable it in Phrases first.";
+
+$text['message-phrase_language_mismatch']['en-us'] = "This phrase is in a different language from the IVR menu, so callers would hear nothing.";
+
 ?>

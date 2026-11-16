@@ -111,6 +111,43 @@ session cookie has no expiry, but a browser that restores tabs may keep it.
 Upgrades set the value again, including after a PHP package update that
 replaced `php.ini`.
 
+## IVR phrases (Google Text-to-Speech)
+
+In **Applications > IVR Manager**, a greeting can be set to any recording or
+phrase of the domain, or to a new phrase built there from text and pauses.
+Each text part is spoken by Google Text-to-Speech, saved as a recording, and
+played in order by an upstream phrase (also editable in **Applications >
+Phrases**). The phrase uses the IVR menu's language.
+
+Credentials, either:
+
+- **Service account key file** (preferred, what Google's client libraries
+  use). Create a service account in a Google Cloud project with the
+  Text-to-Speech API enabled, download its JSON key, then:
+
+  ```sh
+  sudo install -o root -g www-data -m 0640 key.json /etc/fusionpbx/google-tts.json
+  rm key.json
+  ```
+
+  Give the service account no IAM roles: Text-to-Speech only needs the API
+  enabled on the project, so a leaked key can do nothing else.
+
+- **API key:** set **Advanced > Default Settings > x_ivr_manager >
+  google_tts_api_key**, restricted to the Text-to-Speech API.
+
+The default voice is `en-US-Wavenet-D` (`google_tts_voice`); the voice list
+shows the voices for `google_tts_language_code` (default `en-US`). The server
+needs outbound HTTPS to `texttospeech.googleapis.com` and
+`oauth2.googleapis.com`. The admin and superadmin groups have the
+`x_ivr_manager_phrase` permission. The credentials are read from Default
+Settings only, never from domain or user settings.
+
+A phrase only plays when it is enabled and its language matches the call's
+language, so the picker refuses other phrases. A sub-menu keeps the language of
+the menu callers came from: a phrase for a sub-menu in a different language
+stays silent.
+
 ## Carrier credentials and encryption
 
 Setting up a carrier, with Telnyx as the example: [docs/carrier-credentials.md](docs/carrier-credentials.md).
