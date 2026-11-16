@@ -77,6 +77,41 @@ if ($domains_processed == 1) {
 			unset($sql, $parameters);
 		}
 
+	//check the theme marker
+		$sql = "select count(*) from v_default_settings ";
+		$sql .= "where default_setting_category = 'x_install' ";
+		$sql .= "and default_setting_subcategory = 'theme_initialized' ";
+		$theme_initialized = $database->select($sql, null, 'column');
+		unset($sql);
+
+	//make upstream's dark theme (Cobalt Blue, core/themes/app_defaults.php) the default; upstream ships
+	//domain > theme > uuid empty, which is the light default. a theme an admin already chose is kept, and
+	//users and domains can still pick their own.
+		if (empty($theme_initialized)) {
+			//the row is upstream's (core/themes/app_config.php, same uuid); create it if this runs first,
+			//upstream then skips it because the uuid exists
+			$sql = "insert into v_default_settings ";
+			$sql .= "(default_setting_uuid, app_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled, default_setting_description) ";
+			$sql .= "select 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a', '26b2a370-1769-4275-9ed7-a2e1a2b058bf', 'domain', 'theme', 'uuid', '', true, '' ";
+			$sql .= "where not exists (select 1 from v_default_settings where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a') ";
+			$database->execute($sql, null);
+			unset($sql);
+
+			$sql = "update v_default_settings ";
+			$sql .= "set default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44', default_setting_enabled = true ";
+			$sql .= "where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' ";
+			$sql .= "and (default_setting_value is null or default_setting_value = '') ";
+			$database->execute($sql, null);
+			unset($sql);
+
+			$sql = "insert into v_default_settings ";
+			$sql .= "(default_setting_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled, default_setting_description) ";
+			$sql .= "values (:uuid, 'x_install', 'theme_initialized', 'boolean', 'true', false, 'Marker: the dark theme was made the default at install. Do not remove.') ";
+			$parameters['uuid'] = uuid();
+			$database->execute($sql, $parameters);
+			unset($sql, $parameters);
+		}
+
 }
 
 ?>
