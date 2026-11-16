@@ -1,0 +1,36 @@
+[Unit]
+Description=Link phones to their wallpaper with device settings (x_provision_overlay)
+Wants=network-online.target
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/fusionpbx
+ExecStart=/usr/bin/php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/wallpapers.php --sync
+TimeoutStartSec=10min
+Nice=10
+
+;hardening
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+SystemCallArchitectures=native
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+CapabilityBoundingSet=
+UMask=0027
+;the sync writes device settings (database, over sockets), the lock, the template check cache and removes
+;the request file of the wallpapers page, all under the overlay state root
+ReadWritePaths=/var/lib/fusionpbx/provision_overlay -/var/cache/fusionpbx

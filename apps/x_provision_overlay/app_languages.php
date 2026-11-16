@@ -4,18 +4,25 @@ $text['title-x_provision_overlay']['en-us'] = "Provision Templates";
 $text['title-x_provision_overlay_edit']['en-us'] = "Provision Template Override";
 $text['title-x_provision_overlay_assets']['en-us'] = "Provision Branding";
 $text['title-x_provision_overlay_build']['en-us'] = "Provision Template Build";
+$text['title-x_provision_overlay_wallpapers']['en-us'] = "Phone Wallpapers";
 
 $text['header-x_provision_overlay']['en-us'] = "Provision Templates";
 $text['header-x_provision_overlay_edit']['en-us'] = "Provision Template Override";
 $text['header-x_provision_overlay_assets']['en-us'] = "Provision Branding";
 $text['header-x_provision_overlay_build']['en-us'] = "Provision Template Build";
+$text['header-x_provision_overlay_wallpapers']['en-us'] = "Phone Wallpapers";
+$text['header-wallpaper_not_linked']['en-us'] = "Devices Without the Managed Wallpaper";
 $text['header-new_file']['en-us'] = "New Override";
 $text['header-upload_asset']['en-us'] = "Upload Image";
 $text['header-apply_setting']['en-us'] = "Apply to Vendor Settings";
 $text['header-verify']['en-us'] = "Verify";
 
 $text['description-x_provision_overlay']['en-us'] = "Override provisioning template files for all domains (global) or for this domain only, without changing the upstream templates. Files that are not overridden keep receiving upstream updates.";
-$text['description-x_provision_overlay_assets']['en-us'] = "Logos and wallpapers for the phones of this domain. Phones download them from the URL shown; use the URL in a vendor setting or in a template override.";
+$text['description-x_provision_overlay_assets']['en-us'] = "Logos and other images for the phones of this domain. Phones download them from the URL shown; use the URL in a template override. Phone wallpapers are managed under Wallpapers.";
+$text['description-x_provision_overlay_wallpapers']['en-us'] = "One wallpaper per screen size for the phones of this domain. Upload any PNG or JPEG: it is scaled and cropped to the size and converted to the format each phone needs. Groups without an image here use the system default, or the phone's own default. Phones are linked automatically within two minutes, including phones added later; a phone picks the wallpaper up the next time it fetches its configuration (some models only at boot).";
+$text['description-wallpapers_global']['en-us'] = "System default wallpapers, used by every domain that has no image of its own for a size. Changes reach the phones of all domains within two minutes, at their next configuration fetch.";
+$text['description-wallpaper_upload']['en-us'] = "PNG or JPEG, up to {max} MB and 4096 x 4096 pixels. The image is scaled to cover the size and the center is kept. Transparent areas become white. Yealink phones keep downloaded wallpapers in their own storage; removing an image here does not delete it from the phones.";
+$text['description-wallpaper_not_linked']['en-us'] = "A wallpaper set elsewhere wins: a domain setting, a device profile setting or a device setting of the same name. Remove that value to switch the device to the wallpaper managed here. To keep a device on its current wallpaper, disable its wallpaper rows under the device's settings (deleting them does not opt out; they are written again).";
 $text['description-new_file']['en-us'] = "Open the editor for a vendor, model and file name. Start typing to pick an existing one. A template that does not exist upstream is created as a new template; its vendor must exist under Device Vendors.";
 $text['description-code_execution']['en-us'] = "Templates are executed by the template engine on the server. Only trusted administrators should be allowed to edit them.";
 $text['description-asset_file']['en-us'] = "PNG, JPEG, BMP or GIF, up to {max} MB and 4096 x 4096 pixels. The image is re-encoded in the same format when saved. SVG is not accepted.";
@@ -71,7 +78,19 @@ $text['label-asset_size']['en-us'] = "Size";
 $text['label-asset_url']['en-us'] = "URL";
 $text['label-uploaded']['en-us'] = "Uploaded";
 $text['label-no_assets']['en-us'] = "No images have been uploaded.";
-$text['label-no_vendor_settings']['en-us'] = "No vendor image settings are available.";
+$text['label-no_vendor_settings']['en-us'] = "No vendor image settings are available. Phone wallpapers are linked under Wallpapers.";
+$text['label-wallpaper_current']['en-us'] = "Current image";
+$text['label-wallpaper_domain']['en-us'] = "This domain";
+$text['label-wallpaper_global']['en-us'] = "System default";
+$text['label-wallpaper_factory']['en-us'] = "Phone default";
+$text['label-wallpaper_formats']['en-us'] = "Generated as";
+$text['label-wallpaper_models']['en-us'] = "Models (devices of this domain)";
+$text['label-wallpaper_devices']['en-us'] = "Devices using this image";
+$text['label-wallpaper_device']['en-us'] = "Device";
+$text['label-wallpaper_all_linked']['en-us'] = "Every device on a listed model uses the image of its group.";
+$text['label-wallpaper_source_domain']['en-us'] = "domain setting";
+$text['label-wallpaper_source_profile']['en-us'] = "profile";
+$text['label-wallpaper_source_device']['en-us'] = "device setting";
 
 $text['option-overrides_only']['en-us'] = "Overrides only";
 $text['option-all_templates']['en-us'] = "All templates";
@@ -84,9 +103,22 @@ $text['status-domain_override']['en-us'] = "Domain override";
 $text['status-orphaned']['en-us'] = "No upstream counterpart";
 $text['status-template_missing']['en-us'] = "Upstream template missing";
 
+$text['state-wallpaper_own']['en-us'] = "Uses its own wallpaper";
+$text['state-wallpaper_optout']['en-us'] = "Opted out (wallpaper row disabled)";
+$text['state-wallpaper_alternate']['en-us'] = "Uses an alternate device";
+$text['state-wallpaper_unsupported']['en-us'] = "Template changed: no longer supported";
+$text['state-wallpaper_disabled']['en-us'] = "Device disabled";
+
 $text['warning-vendor_missing']['en-us'] = "These vendors have no enabled Device Vendors entry, so their templates are not offered in the device template list";
+$text['warning-wallpaper_upscaled']['en-us'] = "The image is smaller than the screen and was enlarged; it may look blurred.";
+$text['warning-wallpaper_unsupported']['en-us'] = "These templates no longer reference the wallpaper settings (changed upstream or by a template override); their phones are not linked";
+$text['warning-wallpaper_memory']['en-us'] = "PHP memory_limit is {limit}: images larger than about {max} x {max} pixels are refused.";
 
 $text['button-assets']['en-us'] = "Branding";
+$text['button-wallpapers']['en-us'] = "Wallpapers";
+$text['button-wallpapers_domain']['en-us'] = "This Domain";
+$text['button-wallpapers_global']['en-us'] = "System Defaults";
+$text['button-remove']['en-us'] = "Remove";
 $text['button-build_status']['en-us'] = "Build";
 $text['button-edit_domain']['en-us'] = "Domain";
 $text['button-edit_global']['en-us'] = "Global";
@@ -103,6 +135,7 @@ $text['button-rollback']['en-us'] = "Roll Back";
 $text['confirm-reset']['en-us'] = "Delete this override?";
 $text['confirm-delete_asset']['en-us'] = "Delete this image? Phones and settings that use its URL will no longer find it.";
 $text['confirm-rollback']['en-us'] = "Switch to the previous build?";
+$text['confirm-remove_wallpaper']['en-us'] = "Remove this image? Phones switch to the system default or their own default at their next configuration fetch.";
 
 $text['message-saved']['en-us'] = "Override saved and templates rebuilt.";
 $text['message-reset']['en-us'] = "Override deleted and templates rebuilt.";
@@ -111,6 +144,10 @@ $text['message-rolled_back']['en-us'] = "Switched to the previous build";
 $text['message-asset_saved']['en-us'] = "Image saved";
 $text['message-asset_deleted']['en-us'] = "Image deleted.";
 $text['message-setting_applied']['en-us'] = "Domain setting saved.";
+$text['message-wallpaper_saved']['en-us'] = "Wallpaper saved and phones linked.";
+$text['message-wallpaper_saved_global']['en-us'] = "System default saved. Phones of all domains are linked within two minutes.";
+$text['message-wallpaper_removed']['en-us'] = "Wallpaper removed.";
+$text['message-wallpaper_removed_global']['en-us'] = "System default removed. Phones of all domains are updated within two minutes.";
 $text['message-invalid_token']['en-us'] = "Invalid token. Please try again.";
 
 $text['error-permission']['en-us'] = "Access denied.";
@@ -134,5 +171,12 @@ $text['error-asset_process']['en-us'] = "The image could not be processed.";
 $text['error-asset_store']['en-us'] = "The image could not be stored.";
 $text['error-setting']['en-us'] = "The domain setting could not be saved.";
 $text['error-setting_unknown']['en-us'] = "That setting cannot be set from here.";
+$text['error-wallpaper_group']['en-us'] = "Unknown wallpaper size.";
+$text['error-wallpaper_type']['en-us'] = "Only PNG and JPEG images are allowed.";
+$text['error-wallpaper_memory']['en-us'] = "The image has too many pixels for the PHP memory limit. Upload a smaller image.";
+$text['error-wallpaper_too_large']['en-us'] = "The image cannot be made small enough for these phones. Upload a simpler image.";
+$text['error-wallpaper_sync']['en-us'] = "The image was saved but the phones could not be linked; the next automatic run retries. The details are in the system log.";
+$text['error-wallpaper_analysis']['en-us'] = "The devices could not be checked. The details are in the system log.";
+$text['error-wallpaper_meta']['en-us'] = "The wallpaper list of this scope cannot be read, so wallpapers are not changed and phones are not relinked until it is fixed. The details are in the system log.";
 
 ?>

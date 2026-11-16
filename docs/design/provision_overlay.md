@@ -68,10 +68,16 @@ templates reference them by URL from settings, e.g.
 `resources/templates/provision/polycom/vvx450/{$mac}.cfg:420-423`),
 `{$grandstream_wallpaper_url}` (`app/grandstream/app_config.php:292`,
 `grandstream/gxp2170/{$mac}.xml:2671-2677`), `poly_obi_logo_450`
-(`app/poly/app_config.php:53`). Yealink templates have no wallpaper/logo
-setting at all, so a Yealink logo requires a template override (the main use
-case for this app). `{$domain_name}` / `${domain_name}` inside provision
-setting values are substituted at render time (`provision.php:1563-1568`).
+(`app/poly/app_config.php:53`). Yealink templates do read a wallpaper from
+settings, per model: `{$yealink_<model>_wallpaper}` (the download URL) and
+`{$yealink_<model>_wallpaper_filename}` (`yealink/t46s/y000000000066.cfg:1482-1486`;
+some templates read another model's variables, see
+[provision_wallpapers.md](provision_wallpapers.md) section 3). Their logo
+(`lcd_logo.url`, `yealink/t46s/y000000000066.cfg:1292`) is not fed by any
+setting, so a Yealink logo requires a template override.
+`{$domain_name}` / `${domain_name}` inside provision setting values (default,
+domain and device settings) are substituted at render time
+(`provision.php:1563-1568`).
 
 ### 2.4 Settings, defaults and upgrades
 
@@ -219,12 +225,19 @@ dir (realpath-checked); content type from the sniffed type recorded at upload
 provision HTTP auth: phones do not reliably send credentials for secondary
 downloads, and the files are non-sensitive branding.
 
-Templates reference assets through settings, not paths. The branding page
-offers "apply to vendor settings", which writes domain settings such as
-`provision.polycom_background_url = http://{$domain_name}/provision-assets/wallpaper.jpg`
-(substituted at `provision.php:1563-1568`). For vendors without an upstream
-setting (Yealink), the page offers a canned per-template override snippet
-that the admin saves as a domain override.
+Templates reference assets through settings, not paths. Phone wallpapers
+are handled by the Wallpapers page ([provision_wallpapers.md](provision_wallpapers.md)):
+one image per screen size, linked to each phone with device settings. The
+branding page's "apply to vendor settings", which writes a domain setting
+such as `provision.<setting> = http://{$domain_name}/provision-assets/<file>`
+(substituted at `provision.php:1563-1568`), no longer offers the wallpaper
+settings (`polycom_background_url`, `grandstream_wallpaper_url`,
+`poly_obi_logo_*`, `yealink_*_wallpaper`), so it currently offers none;
+domain settings it wrote earlier stay and take precedence over the managed
+wallpaper until removed. For images without an upstream setting (e.g. a
+Yealink logo), the page offers a canned per-template override snippet that
+the admin saves as a domain override. Names starting with `wp-` are reserved
+for wallpapers.
 
 ### 3.5 First-install enabling of provisioning
 

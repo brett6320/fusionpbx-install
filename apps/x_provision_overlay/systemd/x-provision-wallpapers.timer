@@ -1,0 +1,11 @@
+[Unit]
+Description=Link phones to their wallpaper every 2 minutes (catches devices added or changed in Devices)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=15s
+Unit=x-provision-wallpapers.service
+
+[Install]
+WantedBy=timers.target

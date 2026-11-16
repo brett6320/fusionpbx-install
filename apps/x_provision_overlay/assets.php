@@ -80,8 +80,18 @@
 		x_provision_overlay_not_found();
 	}
 
-//the file must be a recorded asset of this domain (realpath checked)
-	$asset = provision_overlay::asset_info($domain_uuid, $file_name);
+//the file must be a recorded asset of this domain (realpath checked); wp-<group>-<hash>.<ext> names are
+//wallpapers, recorded in the domain's .wallpapers.json, else in the global one (system defaults)
+	require_once __DIR__ . "/resources/classes/provision_wallpapers.php";
+	if (provision_wallpapers::valid_file_name($file_name)) {
+		$asset = provision_wallpapers::file_info($domain_uuid, $file_name);
+		//content-hashed names: a new image gets a new name
+		$max_age = 86400;
+	}
+	else {
+		$asset = provision_overlay::asset_info($domain_uuid, $file_name);
+		$max_age = 300;
+	}
 	if ($asset === null) {
 		x_provision_overlay_not_found();
 	}
@@ -95,7 +105,7 @@
 	header('Content-Length: '.$size);
 	header('X-Content-Type-Options: nosniff');
 	header("Content-Security-Policy: default-src 'none'");
-	header('Cache-Control: public, max-age=300');
+	header('Cache-Control: public, max-age='.$max_age);
 	header('Last-Modified: '.gmdate('D, d M Y H:i:s', (int) filemtime($asset['path'])).' GMT');
 	if ($method === 'GET') {
 		readfile($asset['path']);

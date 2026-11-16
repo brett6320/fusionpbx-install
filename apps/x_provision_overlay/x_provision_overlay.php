@@ -70,6 +70,7 @@
 	echo "	<div class='heading'><b>".$text['header-x_provision_overlay']."</b></div>\n";
 	echo "	<div class='actions'>\n";
 	echo button::create(['type'=>'button','label'=>$text['button-assets'],'icon'=>'image','link'=>'x_provision_overlay_assets.php']);
+	echo button::create(['type'=>'button','label'=>$text['button-wallpapers'],'icon'=>'image','link'=>'x_provision_overlay_wallpapers.php']);
 	echo button::create(['type'=>'button','label'=>$text['button-build_status'],'icon'=>'cogs','link'=>'x_provision_overlay_build.php']);
 	echo "		<form id='form_filter' class='inline' method='get'>\n";
 	echo "		<select class='formfld' name='vendor' onchange=\"document.getElementById('form_filter').submit();\">\n";
