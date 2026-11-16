@@ -18,7 +18,17 @@ $text['label-not_set']['en-us'] = "Not set";
 
 $text['label-schedule_none']['en-us'] = "None";
 
-$text['label-schedule_active']['en-us'] = "Active";
+$text['label-schedule_active']['en-us'] = "Active now";
+
+$text['label-schedule_inactive']['en-us'] = "Not active now";
+
+$text['label-schedule_disabled']['en-us'] = "Disabled";
+
+$text['message-schedule_lookup_failed']['en-us'] = "The schedule could not be read. Nothing was changed; try again or check the database upgrade (upgrade.sh).";
+
+$text['message-schedule_link_failed']['en-us'] = "The time condition was saved, but its rules could not be stored. Run upgrade.sh, then save the schedule again.";
+
+$text['message-schedule_time_zone_changed']['en-us'] = "This schedule was saved in the time zone %s; the domain now uses %s. Saving applies the domain time zone to its rules.";
 
 $text['label-schedule_pending']['en-us'] = "Starts later";
 
@@ -102,7 +112,7 @@ $text['message-tts_failed']['en-us'] = "The greeting could not be generated.";
 
 $text['header-schedule']['en-us'] = "Schedule";
 
-$text['description-schedule']['en-us'] = "Route calls to this IVR menu only between the start and end below. Outside that window calls go to the fallback destination. The schedule gets its own extension: send calls to it, not to the IVR menu, for the schedule to apply.";
+$text['description-schedule']['en-us'] = "Route calls to this IVR menu only while one of the rules below matches. At other times calls go to the fallback destination. The schedule gets its own extension: send calls to it, not to the IVR menu, for the schedule to apply.";
 
 $text['label-schedule_name']['en-us'] = "Name";
 
@@ -116,11 +126,9 @@ $text['label-schedule_end']['en-us'] = "End";
 
 $text['label-fallback']['en-us'] = "Fallback Destination";
 
-$text['description-fallback']['en-us'] = "Where calls go before the start and after the end.";
+$text['description-fallback']['en-us'] = "Where calls go while no rule matches.";
 
-$text['description-schedule_time_zone']['en-us'] = "Dates and times are in the domain time zone.";
-
-$text['message-schedule_complex']['en-us'] = "This schedule was changed in Time Conditions and has more than a single start and end. Saving here replaces those conditions.";
+$text['message-schedule_complex']['en-us'] = "This schedule was changed in Time Conditions and no longer matches rules IVR Manager can show. Add the rules again; saving here replaces those conditions.";
 
 $text['button-delete_schedule']['en-us'] = "Remove Schedule";
 
@@ -283,5 +291,117 @@ $text['message-ivr_limit']['en-us'] = "The maximum number of IVR menus for this 
 $text['message-ivr_create_failed']['en-us'] = "The IVR menu could not be created.";
 
 $text['message-ivr_extension_generate_failed']['en-us'] = "No number could be generated, enter one.";
+
+$text['label-schedule_rules']['en-us'] = "Rules";
+
+$text['description-schedule_rules']['en-us'] = "The IVR menu answers while any rule matches. One time: from a start to an end, e.g. a closure. Weekly: days of the week, all day or from one time to another (24 hour, 24:00 for the end of the day; for hours past midnight add a second rule from 00:00). Annual: a date every year, optionally also the observed weekday, or a weekday of a month such as the 4th Thursday of November (US Thanksgiving); the holiday presets fill these in. Holidays that follow Easter or a lunar calendar cannot repeat on their own: add them as one time rules. Rules only add time and cannot make exceptions: for open hours except holidays, schedule the closed-hours menu with the after hours and holiday rules and make the open-hours menu the fallback. Limits: one time window per rule; no window past midnight; no observed day for Feb 28, Feb 29 and Mar 1; up to 40 rules. Changes made in Time Conditions replace the rules here. Dates and times are in the domain time zone (%s).";
+
+$text['option-rule_once']['en-us'] = "One time";
+
+$text['option-rule_weekly']['en-us'] = "Weekly";
+
+$text['option-rule_annual']['en-us'] = "Annual";
+
+$text['label-rule_label']['en-us'] = "Label (optional)";
+
+$text['option-rule_preset']['en-us'] = "US holiday preset...";
+
+$text['option-rule_kind_date']['en-us'] = "On a date";
+
+$text['option-rule_kind_nth']['en-us'] = "On the";
+
+$text['label-rule_of']['en-us'] = "of";
+
+$text['label-rule_observed']['en-us'] = "Also the observed day: the Friday before when it falls on a Saturday, the Monday after when on a Sunday";
+
+$text['option-nth_1']['en-us'] = "1st";
+
+$text['option-nth_2']['en-us'] = "2nd";
+
+$text['option-nth_3']['en-us'] = "3rd";
+
+$text['option-nth_4']['en-us'] = "4th";
+
+$text['option-nth_last']['en-us'] = "last";
+
+$text['option-offset_0']['en-us'] = "on that day";
+
+$text['option-offset_after']['en-us'] = "%d day(s) after";
+
+$text['option-offset_before']['en-us'] = "%d day(s) before";
+
+$text['label-rule_all_day']['en-us'] = "All day";
+
+$text['label-rule_from']['en-us'] = "From";
+
+$text['label-rule_to']['en-us'] = "to";
+
+$text['label-rule_next']['en-us'] = "Next: %s";
+
+$text['button-add_rule']['en-us'] = "Add Rule";
+
+$text['button-remove_rule']['en-us'] = "Remove";
+
+$text['message-schedule_rule_error']['en-us'] = "Rule %d: %s";
+
+$text['message-schedule_rules_required']['en-us'] = "Add at least one rule to the schedule.";
+
+$text['message-schedule_rules_too_many']['en-us'] = "A schedule can have up to 40 rules.";
+
+$text['message-schedule_rule_type_invalid']['en-us'] = "Choose one time, weekly or annual.";
+
+$text['message-schedule_rule_label_invalid']['en-us'] = "The label can be up to 64 characters.";
+
+$text['message-schedule_rule_time_invalid']['en-us'] = "Enter the times as HH:MM (24 hour), or tick All day.";
+
+$text['message-schedule_rule_time_overnight']['en-us'] = "The end time must be after the start time. For hours past midnight, add a second rule from 00:00.";
+
+$text['message-schedule_rule_days_required']['en-us'] = "Choose at least one day.";
+
+$text['message-schedule_rule_date_invalid']['en-us'] = "Choose a valid date.";
+
+$text['message-schedule_rule_last_february']['en-us'] = "The last weekday of February is not supported, its length varies.";
+
+$text['message-schedule_rule_observed_february']['en-us'] = "The observed day is not supported for February 28, February 29 or March 1, their neighbours depend on the leap year.";
+
+$text['message-schedule_rule_offset_month']['en-us'] = "With this offset the day can fall in another month. Choose a smaller offset.";
+
+$text['label-wday_1']['en-us'] = "Sunday";
+
+$text['label-wday_2']['en-us'] = "Monday";
+
+$text['label-wday_3']['en-us'] = "Tuesday";
+
+$text['label-wday_4']['en-us'] = "Wednesday";
+
+$text['label-wday_5']['en-us'] = "Thursday";
+
+$text['label-wday_6']['en-us'] = "Friday";
+
+$text['label-wday_7']['en-us'] = "Saturday";
+
+$text['label-month_1']['en-us'] = "January";
+
+$text['label-month_2']['en-us'] = "February";
+
+$text['label-month_3']['en-us'] = "March";
+
+$text['label-month_4']['en-us'] = "April";
+
+$text['label-month_5']['en-us'] = "May";
+
+$text['label-month_6']['en-us'] = "June";
+
+$text['label-month_7']['en-us'] = "July";
+
+$text['label-month_8']['en-us'] = "August";
+
+$text['label-month_9']['en-us'] = "September";
+
+$text['label-month_10']['en-us'] = "October";
+
+$text['label-month_11']['en-us'] = "November";
+
+$text['label-month_12']['en-us'] = "December";
 
 ?>

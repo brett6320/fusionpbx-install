@@ -138,6 +138,10 @@
 		$apps[$x]['db'][$y]['fields'][$z]['key']['reference']['field'] = "dialplan_uuid";
 		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "The time condition (dialplan) that implements the schedule.";
 		$z++;
+		$apps[$x]['db'][$y]['fields'][$z]['name'] = "x_ivr_manager_schedule_rules";
+		$apps[$x]['db'][$y]['fields'][$z]['type'] = "text";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "The schedule rules (json) the time condition was built from, with their labels.";
+		$z++;
 		$apps[$x]['db'][$y]['fields'][$z]['name'] = "insert_date";
 		$apps[$x]['db'][$y]['fields'][$z]['type']['pgsql'] = 'timestamptz';
 		$apps[$x]['db'][$y]['fields'][$z]['type']['sqlite'] = 'date';

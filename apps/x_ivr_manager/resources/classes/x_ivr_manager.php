@@ -51,6 +51,7 @@ class x_ivr_manager {
 	public $domain_name;
 	public $message;
 	public $number_used_by;
+	public $rule_number;
 	public $usage = [];
 
 	/**
@@ -1648,10 +1649,10 @@ class x_ivr_manager {
 	 * stock editor are shown here.
 	 *
 	 * @param array $ivr_menu the ivr menu row
-	 * @return array|null
+	 * @return array|null|false null when there is no schedule, false when the lookup failed
 	 */
 	public function get_schedule(array $ivr_menu) {
-		$sql = "select s.x_ivr_manager_schedule_uuid, d.dialplan_uuid, d.dialplan_name, d.dialplan_number, ";
+		$sql = "select s.x_ivr_manager_schedule_uuid, s.x_ivr_manager_schedule_rules, d.dialplan_uuid, d.dialplan_name, d.dialplan_number, ";
 		$sql .= "d.dialplan_context, d.dialplan_order, cast(d.dialplan_enabled as text) as dialplan_enabled, d.dialplan_description ";
 		$sql .= "from v_x_ivr_manager_schedules as s, v_dialplans as d ";
 		$sql .= "where s.domain_uuid = :domain_uuid ";
@@ -1664,6 +1665,11 @@ class x_ivr_manager {
 		$parameters['app_uuid'] = self::time_condition_app_uuid;
 		$schedule = $this->database->select($sql, $parameters, 'row');
 		unset($sql, $parameters);
+		//no row and a failed query both return false; a failed lookup must never look like "no schedule"
+		if ($schedule === false && ($this->database->message['code'] ?? '') !== '200') {
+			$this->message = 'message-schedule_lookup_failed';
+			return false;
+		}
 		if (empty($schedule)) {
 			return null;
 		}
@@ -1673,6 +1679,8 @@ class x_ivr_manager {
 		$sql .= "from v_dialplan_details ";
 		$sql .= "where dialplan_uuid = :dialplan_uuid ";
 		$sql .= "and domain_uuid = :domain_uuid ";
+		//disabled details are left out of the dialplan xml
+		$sql .= "and (dialplan_detail_enabled is null or cast(dialplan_detail_enabled as text) = 'true') ";
 		$sql .= "order by dialplan_detail_group asc, dialplan_detail_order asc";
 		$parameters['dialplan_uuid'] = $schedule['dialplan_uuid'];
 		$parameters['domain_uuid'] = $this->domain_uuid;
@@ -1680,12 +1688,14 @@ class x_ivr_manager {
 		unset($sql, $parameters);
 
 		$schedule['dialplan_time_zone'] = '';
-		$schedule['start'] = '';
-		$schedule['stop'] = '';
 		$schedule['action'] = '';
 		$schedule['anti_action'] = '';
+		$schedule['rules'] = [];
 		$schedule['complex'] = false;
+		//time conditions of each rule group, and the number of actions in it
 		$groups = [];
+		$group_actions = [];
+		$other_action = false;
 		if (is_array($dialplan_details)) {
 			foreach ($dialplan_details as $row) {
 				$group = (string)$row['dialplan_detail_group'];
@@ -1703,67 +1713,167 @@ class x_ivr_manager {
 					}
 					else {
 						$schedule['action'] = $action;
-						$groups[$group] = true;
+						$groups[$group] = $groups[$group] ?? [];
+						$group_actions[$group] = ($group_actions[$group] ?? 0) + 1;
+						//every rule group transfers to the menu, anything else was changed elsewhere
+						if ($action !== $this->schedule_action($ivr_menu)) {
+							$other_action = true;
+						}
 					}
 				}
 				else if ($row['dialplan_detail_tag'] == 'condition' && $group !== '999') {
-					$groups[$group] = true;
-					if ($row['dialplan_detail_type'] == 'date-time' && $schedule['start'] === '') {
-						$tmp = explode('~', $row['dialplan_detail_data']);
-						$schedule['start'] = $tmp[0];
-						$schedule['stop'] = $tmp[1] ?? '';
-						unset($tmp);
-					}
-					else if ($row['dialplan_detail_type'] != 'destination_number' && $row['dialplan_detail_type'] != 'date-time') {
-						$schedule['complex'] = true;
+					$groups[$group] = $groups[$group] ?? [];
+					if ($row['dialplan_detail_type'] != 'destination_number') {
+						$groups[$group][] = [(string)$row['dialplan_detail_type'], (string)$row['dialplan_detail_data']];
 					}
 				}
 			}
 		}
-		if (count($groups) > 1 || $schedule['start'] === '') {
-			$schedule['complex'] = true;
-		}
+		ksort($groups, SORT_NUMERIC);
 
-		//convert from utc to the domain time zone, mirrors time_condition_edit.php:1280-1303
-		$server_time_zone = trim(shell_exec('date +%Z'));
-		if ($server_time_zone === 'UTC') {
-			$user_timezone = $this->time_zone();
-			foreach (['start', 'stop'] as $key) {
-				if (!empty($schedule[$key])) {
-					$dt = DateTime::createFromFormat('Y-m-d H:i', $schedule[$key], new DateTimeZone('UTC'));
-					if ($dt !== false) {
-						$dt->setTimezone(new DateTimeZone($user_timezone));
-						$schedule[$key] = $dt->format('Y-m-d H:i');
-					}
+		//the rules the schedule was saved with, while the time condition still matches them
+		$stored = json_decode((string)($schedule['x_ivr_manager_schedule_rules'] ?? ''), true);
+		unset($schedule['x_ivr_manager_schedule_rules']);
+		$rules = is_array($stored) ? x_ivr_manager_schedule_rules::normalize($stored) : false;
+		//the time zone the time condition was saved with
+		$time_zone = in_array($schedule['dialplan_time_zone'], DateTimeZone::listIdentifiers(), true) ? $schedule['dialplan_time_zone'] : $this->time_zone();
+		$schedule['dialplan_time_zone'] = $time_zone;
+		if ($rules !== false) {
+			$expected = $this->schedule_groups($rules, $time_zone);
+			$actual = $other_action ? null : [];
+			foreach ($other_action ? [] : $groups as $group => $conditions) {
+				if (($group_actions[$group] ?? 0) != 1) {
+					$actual = null;
+					break;
 				}
+				$actual[$group] = $conditions;
+			}
+			if ($actual === $expected) {
+				$schedule['rules'] = $rules;
+				return $schedule;
 			}
 		}
 
+		//a schedule from before rules, or one changed in Time Conditions: a single date-time window becomes a one
+		//time rule, anything else can only be replaced
+		//(with the single transfer of the schedule, other actions can only be replaced)
+		$conditions = count($groups) == 1 && reset($group_actions) == 1 && !$other_action ? reset($groups) : [];
+		if (count($conditions) == 1 && $conditions[0][0] == 'date-time') {
+			[$start, $stop] = array_pad(explode('~', $conditions[0][1], 2), 2, '');
+			$rules = x_ivr_manager_schedule_rules::normalize([['type' => 'once', 'start' => $this->schedule_from_utc($start, $time_zone), 'stop' => $this->schedule_from_utc($stop, $time_zone)]]);
+			if ($rules !== false) {
+				$schedule['rules'] = $rules;
+				return $schedule;
+			}
+		}
+		$schedule['complex'] = true;
 		return $schedule;
 	}
 
 	/**
-	 * Create or update the time condition that routes to the IVR during the window
+	 * The action of the schedule's rule groups: a transfer to the IVR menu
+	 *
+	 * @param array $ivr_menu
+	 * @return string
+	 */
+	private function schedule_action(array $ivr_menu) {
+		return 'transfer:'.$ivr_menu['ivr_menu_extension'].' XML '.$ivr_menu['ivr_menu_context'];
+	}
+
+	/**
+	 * Whether the stock time condition editor stores date-time conditions in UTC on this server
+	 * (time_condition_edit.php:365-399 and 1280-1303 convert when the server runs in UTC)
+	 *
+	 * @return bool
+	 */
+	private function schedule_utc() {
+		static $utc = null;
+		if ($utc === null) {
+			$utc = trim((string)shell_exec('date +%Z')) === 'UTC';
+		}
+		return $utc;
+	}
+
+	/**
+	 * Convert a 'Y-m-d H:i' date-time of the schedule time zone as the stock editor stores it
+	 *
+	 * @param string $value
+	 * @param string $time_zone
+	 * @return string
+	 */
+	private function schedule_to_utc($value, $time_zone) {
+		if (!$this->schedule_utc()) {
+			return $value;
+		}
+		$dt = DateTime::createFromFormat('Y-m-d H:i', $value, new DateTimeZone($time_zone));
+		if ($dt === false) {
+			return $value;
+		}
+		$dt->setTimezone(new DateTimeZone('UTC'));
+		return $dt->format('Y-m-d H:i');
+	}
+
+	/**
+	 * Convert a stored date-time back to the schedule time zone
+	 *
+	 * @param string $value
+	 * @param string $time_zone
+	 * @return string
+	 */
+	private function schedule_from_utc($value, $time_zone) {
+		if (!$this->schedule_utc()) {
+			return $value;
+		}
+		$dt = DateTime::createFromFormat('Y-m-d H:i', $value, new DateTimeZone('UTC'));
+		if ($dt === false) {
+			return $value;
+		}
+		$dt->setTimezone(new DateTimeZone($time_zone));
+		return $dt->format('Y-m-d H:i');
+	}
+
+	/**
+	 * The condition groups of the rules, numbered 500 + 10 per rule + 1 per group of the rule (a rule has at
+	 * most four groups), so every group sorts before the fallback group 999
+	 *
+	 * @param array $rules normalized rules
+	 * @param string $time_zone the time zone of the once rules
+	 * @return array group number => list of [type, data]
+	 */
+	private function schedule_groups(array $rules, $time_zone) {
+		$to_utc = function($value) use ($time_zone) { return $this->schedule_to_utc($value, $time_zone); };
+		$groups = [];
+		foreach (array_values($rules) as $i => $rule) {
+			foreach (x_ivr_manager_schedule_rules::groups($rule, $to_utc) as $k => $conditions) {
+				$groups[(string)(self::schedule_group + $i * 10 + $k)] = $conditions;
+			}
+		}
+		return $groups;
+	}
+
+	/**
+	 * Create or update the time condition that routes to the IVR while a schedule rule matches
 	 *
 	 * The time condition editor (app/time_conditions/time_condition_edit.php) builds
 	 * its dialplan inline, there is no reusable class. This method replicates what
-	 * that editor writes for one custom condition group with a date-time range and
-	 * an alternate destination, so the result opens and edits cleanly there:
+	 * that editor writes for custom condition groups (one or more per schedule rule, see
+	 * x_ivr_manager_schedule_rules) and an alternate destination, so the result opens and
+	 * edits cleanly there:
 	 *  - name clean up:                time_condition_edit.php:147-148
 	 *  - context for users without time_condition_context: time_condition_edit.php:150-169
 	 *  - v_dialplans insert/update:    time_condition_edit.php:172-227 (app_uuid 4b821450-926b-175a-af93-a03c441818b1,
 	 *                                  dialplan_continue false, details deleted then rebuilt on update)
 	 *  - timezone detail (group 0):    time_condition_edit.php:235-261
 	 *  - date-time to UTC conversion:  time_condition_edit.php:365-399
-	 *  - group destination_number, date-time condition (range '~', break never) and
-	 *    group action:                 time_condition_edit.php:480-518 and 567-593
+	 *  - group destination_number, time conditions (date-time range '~', wday, mon, mday,
+	 *    minute-of-day; break never) and group action: time_condition_edit.php:480-518 and 567-593
 	 *  - alternate destination (group 999): time_condition_edit.php:600-638
 	 *  - save details, regenerate dialplan_xml with the dialplan class, clear the
 	 *    cache and the destinations session array: time_condition_edit.php:640-670
 	 *
 	 * @param array $ivr_menu the ivr menu row
-	 * @param array $schedule dialplan_name, dialplan_number, start and stop ('Y-m-d H:i' in the
-	 *                        domain time zone), anti_action, dialplan_enabled
+	 * @param array $schedule dialplan_name, dialplan_number, rules (see x_ivr_manager_schedule_rules::normalize,
+	 *                        dates and times in the domain time zone), anti_action, dialplan_enabled
 	 * @return string|false the dialplan uuid, or false with $this->message set to an error key
 	 */
 	public function save_schedule(array $ivr_menu, array $schedule) {
@@ -1781,19 +1891,12 @@ class x_ivr_manager {
 				$this->message = 'message-schedule_number_invalid';
 				return false;
 			}
-			$cond_start = $schedule['start'] ?? '';
-			$cond_stop = $schedule['stop'] ?? '';
-			$dt_start = DateTime::createFromFormat('!Y-m-d H:i', $cond_start);
-			$dt_stop = DateTime::createFromFormat('!Y-m-d H:i', $cond_stop);
-			if ($dt_start === false || $dt_stop === false || $dt_start->format('Y-m-d H:i') !== $cond_start || $dt_stop->format('Y-m-d H:i') !== $cond_stop) {
-				$this->message = 'message-schedule_date_invalid';
+			$this->rule_number = null;
+			$rules = x_ivr_manager_schedule_rules::normalize($schedule['rules'] ?? [], $rules_error, $this->rule_number);
+			if ($rules === false) {
+				$this->message = $rules_error;
 				return false;
 			}
-			if ($dt_stop <= $dt_start) {
-				$this->message = 'message-schedule_range_invalid';
-				return false;
-			}
-			unset($dt_start, $dt_stop);
 
 		//validate the destinations
 			$destination = new destinations;
@@ -1803,7 +1906,7 @@ class x_ivr_manager {
 				$this->message = 'message-schedule_ivr_disabled';
 				return false;
 			}
-			$dialplan_action = 'transfer:'.$ivr_menu['ivr_menu_extension'].' XML '.$ivr_menu['ivr_menu_context'];
+			$dialplan_action = $this->schedule_action($ivr_menu);
 			if (!$destination->valid($dialplan_action)) {
 				$this->message = 'message-schedule_ivr_invalid';
 				return false;
@@ -1826,6 +1929,9 @@ class x_ivr_manager {
 
 		//find the existing time condition
 			$existing = $this->get_schedule($ivr_menu);
+			if ($existing === false) {
+				return false;
+			}
 			$action = !empty($existing) ? 'update' : 'add';
 
 		//a new or changed number must not already be dialable in the domain; an existing one is kept as it is,
@@ -1957,77 +2063,61 @@ class x_ivr_manager {
 				$x++;
 			}
 
-		//convert to utc when the server runs in utc (time_condition_edit.php:365-399)
-		//the inputs are already 24 hour 'Y-m-d H:i' in the domain time zone, which is what
-		//the stock editor has after its own format parsing
-			$server_time_zone = trim(shell_exec('date +%Z'));
-			if ($server_time_zone === 'UTC') {
-				$user_timezone = $this->time_zone();
-				$dt = DateTime::createFromFormat('Y-m-d H:i', $cond_start, new DateTimeZone($user_timezone));
-				if ($dt !== false) {
-					$dt->setTimezone(new DateTimeZone('UTC'));
-					$cond_start = $dt->format('Y-m-d H:i');
-				}
-				$dt = DateTime::createFromFormat('Y-m-d H:i', $cond_stop, new DateTimeZone($user_timezone));
-				if ($dt !== false) {
-					$dt->setTimezone(new DateTimeZone('UTC'));
-					$cond_stop = $dt->format('Y-m-d H:i');
-				}
-				unset($dt);
-			}
-			$cond_value = $cond_start.'~'.$cond_stop;
-
-		//custom condition group (time_condition_edit.php:480-518)
-			$dialplan_detail_group = self::schedule_group;
-			$dialplan_detail_order = 0;
-
-			//add destination number condition
-			$dialplan_detail_order += 10;
-			$array['dialplan_details'][$x]['domain_uuid'] = is_uuid($domain_uuid) ? $domain_uuid : null;
-			$array['dialplan_details'][$x]['dialplan_uuid'] = $dialplan_uuid;
-			$array['dialplan_details'][$x]['dialplan_detail_uuid'] = uuid();
-			$array['dialplan_details'][$x]['dialplan_detail_tag'] = 'condition';
-			$array['dialplan_details'][$x]['dialplan_detail_type'] = 'destination_number';
-			$array['dialplan_details'][$x]['dialplan_detail_data'] = '^'.$dialplan_number.'$';
-			$array['dialplan_details'][$x]['dialplan_detail_break'] = null;
-			$array['dialplan_details'][$x]['dialplan_detail_inline'] = null;
-			$array['dialplan_details'][$x]['dialplan_detail_group'] = $dialplan_detail_group;
-			$array['dialplan_details'][$x]['dialplan_detail_order'] = $dialplan_detail_order;
-			$array['dialplan_details'][$x]['dialplan_detail_enabled'] = 'true';
-			$x++;
-
-			//add the date-time condition
-			$dialplan_detail_order += 10;
-			$array['dialplan_details'][$x]['domain_uuid'] = is_uuid($domain_uuid) ? $domain_uuid : null;
-			$array['dialplan_details'][$x]['dialplan_uuid'] = $dialplan_uuid;
-			$array['dialplan_details'][$x]['dialplan_detail_uuid'] = uuid();
-			$array['dialplan_details'][$x]['dialplan_detail_tag'] = 'condition';
-			$array['dialplan_details'][$x]['dialplan_detail_type'] = 'date-time';
-			$array['dialplan_details'][$x]['dialplan_detail_data'] = $cond_value;
-			$array['dialplan_details'][$x]['dialplan_detail_break'] = 'never';
-			$array['dialplan_details'][$x]['dialplan_detail_inline'] = null;
-			$array['dialplan_details'][$x]['dialplan_detail_group'] = $dialplan_detail_group;
-			$array['dialplan_details'][$x]['dialplan_detail_order'] = $dialplan_detail_order;
-			$array['dialplan_details'][$x]['dialplan_detail_enabled'] = 'true';
-			$x++;
-
-		//add group action to query (time_condition_edit.php:567-593)
+		//the condition groups of the rules (time_condition_edit.php:341-593), date-time converted to utc when the
+		//server runs in utc as the stock editor does (time_condition_edit.php:365-399)
 			$dialplan_action_array = explode(":", $dialplan_action);
 			$dialplan_action_app = array_shift($dialplan_action_array);
 			$dialplan_action_data = join(':', $dialplan_action_array);
-			$dialplan_detail_order += 10;
-			$array['dialplan_details'][$x]['domain_uuid'] = is_uuid($domain_uuid) ? $domain_uuid : null;
-			$array['dialplan_details'][$x]['dialplan_uuid'] = $dialplan_uuid;
-			$array['dialplan_details'][$x]['dialplan_detail_uuid'] = uuid();
-			$array['dialplan_details'][$x]['dialplan_detail_tag'] = 'action';
-			$array['dialplan_details'][$x]['dialplan_detail_type'] = $dialplan_action_app;
-			$array['dialplan_details'][$x]['dialplan_detail_data'] = $dialplan_action_data;
-			$array['dialplan_details'][$x]['dialplan_detail_break'] = null;
-			$array['dialplan_details'][$x]['dialplan_detail_inline'] = null;
-			$array['dialplan_details'][$x]['dialplan_detail_group'] = $dialplan_detail_group;
-			$array['dialplan_details'][$x]['dialplan_detail_order'] = $dialplan_detail_order;
-			$array['dialplan_details'][$x]['dialplan_detail_enabled'] = 'true';
-			$x++;
+			foreach ($this->schedule_groups($rules, $dialplan_time_zone) as $dialplan_detail_group => $conditions) {
+				$dialplan_detail_order = 0;
+
+				//add destination number condition
+				$dialplan_detail_order += 10;
+				$array['dialplan_details'][$x]['domain_uuid'] = is_uuid($domain_uuid) ? $domain_uuid : null;
+				$array['dialplan_details'][$x]['dialplan_uuid'] = $dialplan_uuid;
+				$array['dialplan_details'][$x]['dialplan_detail_uuid'] = uuid();
+				$array['dialplan_details'][$x]['dialplan_detail_tag'] = 'condition';
+				$array['dialplan_details'][$x]['dialplan_detail_type'] = 'destination_number';
+				$array['dialplan_details'][$x]['dialplan_detail_data'] = '^'.$dialplan_number.'$';
+				$array['dialplan_details'][$x]['dialplan_detail_break'] = null;
+				$array['dialplan_details'][$x]['dialplan_detail_inline'] = null;
+				$array['dialplan_details'][$x]['dialplan_detail_group'] = $dialplan_detail_group;
+				$array['dialplan_details'][$x]['dialplan_detail_order'] = $dialplan_detail_order;
+				$array['dialplan_details'][$x]['dialplan_detail_enabled'] = 'true';
+				$x++;
+
+				//add the time conditions
+				foreach ($conditions as [$cond_var, $cond_value]) {
+					$dialplan_detail_order += 10;
+					$array['dialplan_details'][$x]['domain_uuid'] = is_uuid($domain_uuid) ? $domain_uuid : null;
+					$array['dialplan_details'][$x]['dialplan_uuid'] = $dialplan_uuid;
+					$array['dialplan_details'][$x]['dialplan_detail_uuid'] = uuid();
+					$array['dialplan_details'][$x]['dialplan_detail_tag'] = 'condition';
+					$array['dialplan_details'][$x]['dialplan_detail_type'] = $cond_var;
+					$array['dialplan_details'][$x]['dialplan_detail_data'] = $cond_value;
+					$array['dialplan_details'][$x]['dialplan_detail_break'] = 'never';
+					$array['dialplan_details'][$x]['dialplan_detail_inline'] = null;
+					$array['dialplan_details'][$x]['dialplan_detail_group'] = $dialplan_detail_group;
+					$array['dialplan_details'][$x]['dialplan_detail_order'] = $dialplan_detail_order;
+					$array['dialplan_details'][$x]['dialplan_detail_enabled'] = 'true';
+					$x++;
+				}
+
+				//add group action (time_condition_edit.php:567-593)
+				$dialplan_detail_order += 10;
+				$array['dialplan_details'][$x]['domain_uuid'] = is_uuid($domain_uuid) ? $domain_uuid : null;
+				$array['dialplan_details'][$x]['dialplan_uuid'] = $dialplan_uuid;
+				$array['dialplan_details'][$x]['dialplan_detail_uuid'] = uuid();
+				$array['dialplan_details'][$x]['dialplan_detail_tag'] = 'action';
+				$array['dialplan_details'][$x]['dialplan_detail_type'] = $dialplan_action_app;
+				$array['dialplan_details'][$x]['dialplan_detail_data'] = $dialplan_action_data;
+				$array['dialplan_details'][$x]['dialplan_detail_break'] = null;
+				$array['dialplan_details'][$x]['dialplan_detail_inline'] = null;
+				$array['dialplan_details'][$x]['dialplan_detail_group'] = $dialplan_detail_group;
+				$array['dialplan_details'][$x]['dialplan_detail_order'] = $dialplan_detail_order;
+				$array['dialplan_details'][$x]['dialplan_detail_enabled'] = 'true';
+				$x++;
+			}
 
 		//add the default anti-action (time_condition_edit.php:600-638)
 			$dialplan_detail_group = 999;
@@ -2083,20 +2173,33 @@ class x_ivr_manager {
 			$dialplans->uuid = $dialplan_uuid;
 			$dialplans->xml();
 
-		//save the link between the ivr menu and the time condition
+		//save the link between the ivr menu and the time condition, with the rules
 			if ($action == 'add') {
 				//remove links to time conditions that were deleted in the stock editor
 				$this->delete_schedule($ivr_menu);
-
-				$array['x_ivr_manager_schedules'][0]['x_ivr_manager_schedule_uuid'] = uuid();
-				$array['x_ivr_manager_schedules'][0]['domain_uuid'] = $domain_uuid;
-				$array['x_ivr_manager_schedules'][0]['ivr_menu_uuid'] = $ivr_menu['ivr_menu_uuid'];
-				$array['x_ivr_manager_schedules'][0]['dialplan_uuid'] = $dialplan_uuid;
-				$p = permissions::new();
-				$p->add('x_ivr_manager_schedule_add', 'temp');
-				$this->database->save($array);
-				$p->delete('x_ivr_manager_schedule_add', 'temp');
-				unset($array);
+			}
+			$link_uuid = $action == 'add' ? uuid() : $existing['x_ivr_manager_schedule_uuid'];
+			$rules_json = json_encode($rules, JSON_UNESCAPED_UNICODE);
+			$array['x_ivr_manager_schedules'][0]['x_ivr_manager_schedule_uuid'] = $link_uuid;
+			$array['x_ivr_manager_schedules'][0]['domain_uuid'] = $domain_uuid;
+			$array['x_ivr_manager_schedules'][0]['ivr_menu_uuid'] = $ivr_menu['ivr_menu_uuid'];
+			$array['x_ivr_manager_schedules'][0]['dialplan_uuid'] = $dialplan_uuid;
+			$array['x_ivr_manager_schedules'][0]['x_ivr_manager_schedule_rules'] = $rules_json;
+			$p = permissions::new();
+			$p->add('x_ivr_manager_schedule_add', 'temp');
+			$p->add('x_ivr_manager_schedule_edit', 'temp');
+			$result = $this->database->save($array);
+			$p->delete('x_ivr_manager_schedule_add', 'temp');
+			$p->delete('x_ivr_manager_schedule_edit', 'temp');
+			unset($array);
+			//confirm the rules were stored, the save does not always report a failed query
+			$sql = "select x_ivr_manager_schedule_rules from v_x_ivr_manager_schedules ";
+			$sql .= "where x_ivr_manager_schedule_uuid = :uuid and domain_uuid = :domain_uuid ";
+			$stored = $this->database->select($sql, ['uuid' => $link_uuid, 'domain_uuid' => $domain_uuid], 'column');
+			if ($result === false || $stored !== $rules_json) {
+				$this->clear_time_condition_cache();
+				$this->message = 'message-schedule_link_failed';
+				return false;
 			}
 
 		//clear the cache and the destinations session array (time_condition_edit.php:663-670)
