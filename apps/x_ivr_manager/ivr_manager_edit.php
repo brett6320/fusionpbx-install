@@ -338,7 +338,7 @@
 		if (empty($preview)) {
 			return '';
 		}
-		return " data-preview=\"".escape(json_encode(['steps' => $preview['steps'], 'text' => $preview['text'], 'complete' => $preview['complete']]))."\"";
+		return " data-preview=\"".escape(json_encode(['steps' => $preview['steps'], 'text' => $preview['text'], 'complete' => $preview['complete']], JSON_INVALID_UTF8_SUBSTITUTE))."\"";
 	};
 
 //google voices for new phrases, the configured default first
@@ -1059,10 +1059,12 @@
 	echo "			var step = preview.steps[index++];\n";
 	echo "			if (step.pause !== undefined) { greeting_player.timer = setTimeout(next, step.pause); return; }\n";
 	echo "			var audio = new Audio(step.url);\n";
+	echo "			var advanced = false;\n";
+	echo "			var advance = function() { if (advanced || greeting_player.audio !== audio) { return; } advanced = true; next(); };\n";
 	echo "			greeting_player.audio = audio;\n";
-	echo "			audio.onended = next;\n";
-	echo "			audio.onerror = next;\n";
-	echo "			audio.play().catch(next);\n";
+	echo "			audio.onended = advance;\n";
+	echo "			audio.onerror = advance;\n";
+	echo "			audio.play().catch(advance);\n";
 	echo "		};\n";
 	echo "		next();\n";
 	echo "	}\n";

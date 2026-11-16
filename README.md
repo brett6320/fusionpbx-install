@@ -155,8 +155,9 @@ stays silent.
   its recordings in order with its pauses; other phrase actions (sounds, say)
   are skipped and the page says so.
 - Text-to-speech greetings keep their text: each recording in
-  `recording_message` (also shown in **Applications > Recordings**), a phrase's
-  full script, pauses included, in its description. IVR Manager shows the text
+  `recording_message` (also shown in **Applications > Recordings**), and a
+  phrase's script, pauses included, on one line in its description (up to 255
+  characters, upstream's field size). IVR Manager shows the text
   under the greeting with a Copy button.
 - New greetings get descriptive names, e.g. "Main Menu - Long Greeting -
   2026-11-16 14:05" (domain time zone), unless a name is given. A phrase's
@@ -168,9 +169,12 @@ An IVR schedule is a time condition with its own extension: calls sent to it
 reach the IVR menu inside the time window and the fallback outside it. Send
 calls to the schedule, not to the menu: in **Dialplan > Inbound Routes**,
 choose the schedule under Time Conditions. IVR Manager suggests the first free
-number in `time_conditions > extension_range` (upstream default 800-899),
-refuses a number an extension or another dialplan entry of the domain already
-uses, and lists the inbound routes pointing at the schedule.
+number in `time_conditions > extension_range` (e.g. `800-899` or
+`800-899,900-999`; upstream ships it disabled, so enable it for a suggestion),
+refuses a new number an extension or another dialplan entry of the domain
+already uses (an existing schedule keeps its number), and lists the inbound
+routes pointing at the schedule, from Destinations and Dialplan > Inbound
+Routes.
 
 ## Carrier credentials and encryption
 

@@ -299,14 +299,13 @@ class x_ivr_manager {
 			$data = trim((string)$row['phrase_detail_data']);
 			$filename = null;
 			if ($function === 'play-file') {
-				if (preg_match('/^\$?\{lua streamfile\.lua (.+)\}$/', $data, $matches)) {
-					$filename = basename(trim($matches[1]));
+				$file = preg_match('/^\$?\{lua streamfile\.lua (.+)\}$/', $data, $matches) ? trim($matches[1]) : $data;
+				//a bare name, or a file directly inside the domain recordings directory; anything else is not ours
+				if (strpos($file, '/') === false) {
+					$filename = $file;
 				}
-				else if (strpos($data, '/') === false) {
-					$filename = $data;
-				}
-				else if (dirname($data) === $recording_path || dirname($data) === 'recordings/'.$this->domain_name) {
-					$filename = basename($data);
+				else if (dirname($file) === $recording_path || dirname($file) === 'recordings/'.$this->domain_name) {
+					$filename = basename($file);
 				}
 			}
 			if ($filename !== null && $filename !== '') {
@@ -353,55 +352,90 @@ class x_ivr_manager {
 	}
 
 	/**
-	 * Where the number of a schedule is already dialable in the domain: an extension or number alias, or another
-	 * dialplan entry with that number in the domain context
+	 * Numbers already dialable in the domain: extensions and number aliases, and dialplan entries in the domain
+	 * context, as number => what uses it
+	 *
+	 * @param string|null $dialplan_uuid a dialplan entry to leave out (the schedule's own time condition)
+	 * @return array|false false when the lookup failed
+	 */
+	private function used_numbers($dialplan_uuid = null) {
+		$sql = "select extension, number_alias from v_extensions ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$extensions = $this->database->select($sql, $parameters, 'all');
+		unset($sql, $parameters);
+		$sql = "select dialplan_number, dialplan_name from v_dialplans ";
+		$sql .= "where domain_uuid = :domain_uuid ";
+		$sql .= "and dialplan_context = :context ";
+		$sql .= "and dialplan_number is not null and dialplan_number <> '' ";
+		if (is_uuid($dialplan_uuid)) {
+			$sql .= "and dialplan_uuid <> :dialplan_uuid ";
+			$parameters['dialplan_uuid'] = $dialplan_uuid;
+		}
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['context'] = $this->domain_name;
+		$dialplans = $this->database->select($sql, $parameters, 'all');
+		unset($sql, $parameters);
+		if ($extensions === false || $dialplans === false) {
+			return false;
+		}
+		$used = [];
+		foreach (is_array($dialplans) ? $dialplans : [] as $row) {
+			$used[(string)$row['dialplan_number']] = (string)$row['dialplan_name'];
+		}
+		foreach (is_array($extensions) ? $extensions : [] as $row) {
+			foreach (['extension', 'number_alias'] as $field) {
+				if ((string)$row[$field] !== '') {
+					$used[(string)$row[$field]] = 'extension '.$row['extension'];
+				}
+			}
+		}
+		return $used;
+	}
+
+	/**
+	 * Where the number of a schedule is already dialable in the domain
 	 *
 	 * @param string $number
 	 * @param string|null $dialplan_uuid the schedule's own time condition, ignored
 	 * @return string|null what uses it, or null
 	 */
 	public function number_in_use($number, $dialplan_uuid = null) {
-		$sql = "select extension from v_extensions ";
-		$sql .= "where domain_uuid = :domain_uuid ";
-		$sql .= "and (extension = :number or number_alias = :number) ";
-		$sql .= "limit 1 ";
-		$parameters['domain_uuid'] = $this->domain_uuid;
-		$parameters['number'] = $number;
-		$extension = $this->database->select($sql, $parameters, 'column');
-		unset($sql, $parameters);
-		if (!empty($extension)) {
-			return 'extension '.$extension;
+		$used = $this->used_numbers($dialplan_uuid);
+		if ($used === false) {
+			return 'an unknown entry (the lookup failed)';
 		}
-		$sql = "select dialplan_name from v_dialplans ";
-		$sql .= "where domain_uuid = :domain_uuid ";
-		$sql .= "and dialplan_context = :context ";
-		$sql .= "and dialplan_number = :number ";
-		if (is_uuid($dialplan_uuid)) {
-			$sql .= "and dialplan_uuid <> :dialplan_uuid ";
-			$parameters['dialplan_uuid'] = $dialplan_uuid;
-		}
-		$sql .= "limit 1 ";
-		$parameters['domain_uuid'] = $this->domain_uuid;
-		$parameters['context'] = $this->domain_name;
-		$parameters['number'] = $number;
-		$dialplan_name = $this->database->select($sql, $parameters, 'column');
-		unset($sql, $parameters);
-		return !empty($dialplan_name) ? (string)$dialplan_name : null;
+		return $used[(string)$number] ?? null;
 	}
 
 	/**
-	 * First unused number in the time condition extension range (time_conditions > extension_range, e.g. 800-899)
+	 * First unused number in the time condition extension range (time_conditions > extension_range, e.g. 800-899
+	 * or 800-899,900-999)
 	 *
 	 * @return string empty when the range is unset, invalid or full
 	 */
 	public function suggest_schedule_number() {
-		$range = (string)$this->settings->get('time_conditions', 'extension_range', '');
-		if (!preg_match('/^\s*([0-9]{1,10})\s*-\s*([0-9]{1,10})\s*$/', $range, $matches) || (int)$matches[2] < (int)$matches[1] || (int)$matches[2] - (int)$matches[1] > 10000) {
+		$ranges = [];
+		$span = 0;
+		foreach (explode(',', (string)$this->settings->get('time_conditions', 'extension_range', '')) as $range) {
+			if (!preg_match('/^\s*([0-9]{1,10})\s*-\s*([0-9]{1,10})\s*$/', $range, $matches) || (int)$matches[2] < (int)$matches[1]) {
+				continue;
+			}
+			$span += (int)$matches[2] - (int)$matches[1] + 1;
+			$ranges[] = [(int)$matches[1], (int)$matches[2]];
+		}
+		if (empty($ranges) || $span > 100000) {
 			return '';
 		}
-		for ($number = (int)$matches[1]; $number <= (int)$matches[2]; $number++) {
-			if ($this->number_in_use((string)$number) === null) {
-				return (string)$number;
+		$used = $this->used_numbers();
+		if ($used === false) {
+			return '';
+		}
+		foreach ($ranges as [$first, $last]) {
+			for ($number = $first; $number <= $last; $number++) {
+				if (!isset($used[(string)$number])) {
+					return (string)$number;
+				}
 			}
 		}
 		return '';
@@ -427,7 +461,32 @@ class x_ivr_manager {
 		$parameters['target'] = $target;
 		$parameters['actions'] = '%'.str_replace(['!', '%', '_'], ['!!', '!%', '!_'], json_encode($target)).'%';
 		$rows = $this->database->select($sql, $parameters, 'all');
-		return is_array($rows) ? $rows : [];
+		unset($sql, $parameters);
+		$routes = [];
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			$routes[$row['destination_number']] = $row;
+		}
+
+		//routes added or edited in Dialplan > Inbound Routes keep the transfer in their public dialplan details
+		$sql = "select d.dialplan_number as destination_number, d.dialplan_name as destination_description ";
+		$sql .= "from v_dialplans as d, v_dialplan_details as t ";
+		$sql .= "where d.domain_uuid = :domain_uuid ";
+		$sql .= "and d.dialplan_context = 'public' ";
+		$sql .= "and t.dialplan_uuid = d.dialplan_uuid ";
+		$sql .= "and t.dialplan_detail_tag in ('action', 'anti-action') ";
+		$sql .= "and t.dialplan_detail_type = 'transfer' ";
+		$sql .= "and t.dialplan_detail_data = :target ";
+		$parameters['domain_uuid'] = $this->domain_uuid;
+		$parameters['target'] = $target;
+		$rows = $this->database->select($sql, $parameters, 'all');
+		foreach (is_array($rows) ? $rows : [] as $row) {
+			$number = (string)$row['destination_number'] !== '' ? $row['destination_number'] : $row['destination_description'];
+			if (!isset($routes[$number])) {
+				$routes[$number] = ['destination_number' => $number, 'destination_description' => $row['destination_description']];
+			}
+		}
+		ksort($routes, SORT_NATURAL);
+		return array_values($routes);
 	}
 
 	/**
@@ -626,12 +685,17 @@ class x_ivr_manager {
 		$array['phrases'][0]['phrase_name'] = $phrase_name;
 		$array['phrases'][0]['phrase_language'] = $language;
 		$array['phrases'][0]['phrase_enabled'] = 'true';
-		//the script, so the text can be read and copied later (each part's text is also in its recording)
+		//the script on one line, for the phrase list; upstream edits the description in a 255 character text input.
+		//The full text of each part is in its recording (recording_message)
 		$script = [];
 		foreach ($parts as $part) {
 			$script[] = $part['type'] === 'pause' ? '['.self::pause_label((int)$part['value']).']' : $part['value'];
 		}
-		$array['phrases'][0]['phrase_description'] = 'Google Text-to-Speech, '.$voice.":\n".implode("\n", $script);
+		$description = 'Google Text-to-Speech, '.$voice.': '.implode(' / ', $script);
+		if (mb_strlen($description) > 255) {
+			$description = mb_substr($description, 0, 254).'…';
+		}
+		$array['phrases'][0]['phrase_description'] = $description;
 		$order = 0;
 		foreach ($parts as $index => $part) {
 			$order += 5;
@@ -779,7 +843,7 @@ class x_ivr_manager {
 	public function phrase_default_name(array $ivr_menu) {
 		$now = new DateTime('now', new DateTimeZone($this->time_zone()));
 		$menu = trim(preg_replace('/[^A-Za-z0-9]+/', '_', (string)($ivr_menu['ivr_menu_name'] ?? '')), '_') ?: 'IVR_'.$ivr_menu['ivr_menu_extension'];
-		return substr($menu, 0, 70).'_Greeting_'.$now->format('Y-m-d_Hi');
+		return substr($menu, 0, 55).'_Greeting_'.$now->format('Y-m-d_Hi');
 	}
 
 	/**
@@ -1325,8 +1389,12 @@ class x_ivr_manager {
 			$existing = $this->get_schedule($ivr_menu);
 			$action = !empty($existing) ? 'update' : 'add';
 
-		//the number must not already be dialable in the domain
-			$this->number_used_by = $this->number_in_use($dialplan_number, $existing['dialplan_uuid'] ?? null);
+		//a new or changed number must not already be dialable in the domain; an existing one is kept as it is,
+		//so inbound routes that use it keep working
+			$this->number_used_by = null;
+			if ($action == 'add' || $dialplan_number !== (string)$existing['dialplan_number']) {
+				$this->number_used_by = $this->number_in_use($dialplan_number, $existing['dialplan_uuid'] ?? null);
+			}
 			if ($this->number_used_by !== null) {
 				$this->message = 'message-schedule_number_in_use';
 				return false;
