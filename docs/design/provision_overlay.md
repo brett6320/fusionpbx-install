@@ -133,7 +133,7 @@ global     /var/lib/fusionpbx/provision_overlay/global/<vendor>/<model>/<file>  
 domain     /var/lib/fusionpbx/provision_overlay/domains/<domain_uuid>/<vendor>/<model>/<file>
 assets     /var/lib/fusionpbx/provision_overlay/assets/<domain_uuid>/<file>            (logos, wallpapers)
 merged     /var/lib/fusionpbx/provision_overlay/merged/<build-id>/                     (generated, disposable)
-link       /usr/share/fusionpbx/templates/provision -> ../../../var/lib/fusionpbx/provision_overlay/merged/current
+link       /usr/share/fusionpbx/templates/provision -> /var/lib/fusionpbx/provision_overlay/merged/current
 ```
 
 Overlay state is keyed by `domain_uuid`, never by `domain_name`, so renaming a
@@ -228,19 +228,30 @@ that the admin saves as a domain override.
 
 ### 3.5 First-install enabling of provisioning
 
-`provision.enabled` row exists but is disabled (2.4). The wrapper's
-`install.sh` runs, after `finish.sh`'s `--defaults`:
+`provision.enabled` row exists but is disabled (2.4). This is done by
+`apps/x_local_defaults/app_defaults.php` (run by `upgrade.php --defaults`),
+not by this app and not by `psql`:
 
 ```
 update v_default_settings set default_setting_enabled = true
- where default_setting_uuid = '931f9369-9aac-4620-8d4b-7d2bf642b1d2';
+ where default_setting_category = 'provision'
+   and default_setting_subcategory = 'enabled'
+   and default_setting_name = 'boolean';
 ```
 
-guarded by marker `/var/lib/fusionpbx-install/state/provision_enabled.done`.
-`upgrade.sh` never touches the row. Because `domains::settings()` only
-inserts missing uuids, upstream upgrades do not revert an admin who later
-disables it. The marker protects against re-running our own installer.
-Restart php-fpm afterwards (APCu, 2.4).
+guarded by the DB marker row `x_install.provision_initialized` (a disabled
+default setting inserted alongside), so it runs once. Because
+`domains::settings()` only inserts missing uuids and the marker stays, neither
+upstream upgrades nor our own reruns revert an admin who later disables it.
+`resources/apply.sh` restarts php-fpm after `--defaults` (APCu, 2.4).
+
+The same file also protects provisioning with random HTTP digest auth, once,
+under its own marker `x_install.provision_auth_initialized`:
+`provision.http_auth_type = digest`, `provision.http_auth_username` =
+`prov` + 8 random characters, `provision.http_auth_password` = 24 random
+characters, each enabled. Username and password are only filled while
+upstream's rows are still empty and disabled (the type only while disabled),
+so values an admin already set are kept.
 
 ## 4. Regeneration mechanics
 
@@ -325,13 +336,18 @@ Validation (template overrides)
 
 ## 6. `provision.template_dir` default setting
 
-Set once on first install (same marker mechanism as 3.5, marker
-`template_dir.done`), as a default setting:
+Set once by `apps/x_provision_overlay/app_defaults.php` (run by
+`upgrade.php --defaults`), guarded by the DB marker row
+`x_install.provision_overlay_initialized`, as a default setting. It is
+inserted only when the overlay link is ready (`/usr/share/fusionpbx/templates/provision`
+is our symlink to `merged/current` and resolves to a directory) and no
+`provision.template_dir` default setting exists yet (an admin's own row is
+kept); the marker is written once the link is ready either way:
 
 ```
 category=provision subcategory=template_dir name=text
 value=/usr/share/fusionpbx/templates/provision enabled=true
-uuid=<fixed uuid owned by this project>
+uuid=d250396f-c95d-4632-9bfe-5c556b665c49 (owned by this project)
 ```
 
 Because the value equals the first hard-coded search path it is redundant
@@ -345,9 +361,13 @@ Debian package) and reports it instead.
 ## 7. Rollback / disable
 
 - `build.php --rollback`: repoint `current` to the previous build dir.
-- Disable entirely: `build.php --disable` removes the
-  `/usr/share/fusionpbx/templates/provision` symlink (and the parent dir if
-  empty) and disables the `provision.template_dir` row; upstream then falls
+- Disable entirely: `build.php --disable` writes
+  `/var/lib/fusionpbx/provision_overlay/.disabled`, removes the
+  `/usr/share/fusionpbx/templates/provision` symlink and disables the
+  `provision.template_dir` row. The installer honours the flag
+  (`resources/apps/provision_overlay.sh` does not recreate the link while it
+  exists); `build.php --enable` rebuilds, recreates the link, re-enables the
+  row and removes the flag. With the link gone, upstream falls
   back to `/etc/fusionpbx/resources/templates/provision` or the in-tree dir
   (`provision.php:121-124`). Overlay state in `/var/lib` is kept. Device rows
   pointing at overlay-only templates will 404 until re-enabled.
@@ -415,33 +435,32 @@ re-asserts ownership/modes but never rewrites overlay content or settings)
 | `.../.lock` | www-data:www-data | 0640 | flock |
 | `/usr/share/fusionpbx/templates/` | www-data:www-data | 0755 | parent of the link |
 | `/usr/share/fusionpbx/templates/provision` | symlink | - | `-> /var/lib/fusionpbx/provision_overlay/merged/current` |
-| `/var/lib/fusionpbx-install/state/provision_enabled.done`, `template_dir.done` | root:root | 0644 | first-install markers |
 | `/etc/systemd/system/x-provision-overlay.service` | root:root | 0644 | `Type=oneshot`, `User=www-data`, `ExecStart=/usr/bin/php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/build.php --build` |
 | `/etc/systemd/system/x-provision-overlay.timer` | root:root | 0644 | `OnCalendar=daily`, `RandomizedDelaySec=1h`, `Persistent=true` |
-| `/etc/nginx/sites-available/fusionpbx` | root:root | 0644 | marker-delimited `location ^~ /provision-assets/` block inserted into both the `:80` and `:443` server blocks, fastcgi to `/var/run/php/php8.4-fpm.sock` with `SCRIPT_FILENAME /var/www/fusionpbx/app/x_provision_overlay/assets.php`, `SCRIPT_NAME /app/x_provision_overlay/assets.php`; `nginx -t` before reload |
+| `/etc/nginx/sites-available/fusionpbx` | root:root | 0644 | marker-delimited `location ^~ /provision-assets/` block inserted into both the `:80` and `:443` server blocks, fastcgi to the php-fpm socket the vhost already uses (default `/var/run/php/php8.4-fpm.sock`) with `SCRIPT_FILENAME /var/www/fusionpbx/app/x_provision_overlay/assets.php`, `SCRIPT_NAME /app/x_provision_overlay/assets.php`; in the plain-http :80 block also a `location ^~ /app/x_provision_overlay/` 301 redirect to https; `nginx -t` before reload |
 
-Order of operations in `install.sh` (after upstream `finish.sh` completes)
+Order of operations in `resources/apply.sh` (after upstream `finish.sh`
+completes; the same sequence runs for install and upgrade)
 
-1. Copy app dir, chown, chmod.
-2. Create `/var/lib/fusionpbx/provision_overlay` tree and `/usr/share/fusionpbx/templates`.
-3. `runuser -u www-data -- php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/build.php --build` (creates `merged/<id>` and `current`).
-4. `ln -sfn /var/lib/fusionpbx/provision_overlay/merged/current /usr/share/fusionpbx/templates/provision` (if the path exists and is not our symlink: abort with message).
-5. `cd /var/www/fusionpbx && php core/upgrade/upgrade.php --defaults` (registers app, default settings, re-asserts php-fpm `ReadWritePaths` including `/usr/share/fusionpbx`), then `--menu`, `--permissions`.
-6. Enable provisioning (3.5) and set `provision.template_dir` (6), each guarded by its marker, via `psql` as in `finish.sh`.
-7. Insert nginx block, `nginx -t && systemctl reload nginx`.
-8. Install service + timer, `systemctl daemon-reload && systemctl enable --now x-provision-overlay.timer`.
-9. `systemctl restart php8.4-fpm`.
-10. `build.php --verify` and print the summary.
+1. Copy app dir (rsync, excluding `systemd/` and `sbin/`), chown.
+2. Run the hook `resources/apps/provision_overlay.sh install|upgrade`, before
+   `upgrade.php`:
+   1. chmod the app dir (0750/0640, as www-data).
+   2. Create/re-assert the `/var/lib/fusionpbx/provision_overlay` tree and `/usr/share/fusionpbx/templates`.
+   3. If `/usr/share/fusionpbx/templates/provision` exists and is not our symlink: die on install, warn on upgrade.
+   4. `runuser -u www-data -- php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/build.php --build` (creates `merged/<id>` and `current`).
+   5. `ln -sfn /var/lib/fusionpbx/provision_overlay/merged/current /usr/share/fusionpbx/templates/provision`, unless `.disabled` exists (section 7).
+   6. Insert the nginx blocks between markers: `location ^~ /provision-assets/` in the :80 and :443 server blocks, plus, in the plain-http :80 block only, `location ^~ /app/x_provision_overlay/ { return 301 https://$host$request_uri; }` (upstream's https exemption regex `(provision|xml_cdr|firmware)` would otherwise serve the admin pages and login over http). `nginx -t` before and after; restore and warn on failure; reload only if changed.
+   7. `build.php --verify` and print the summary.
+3. Install unit files from `apps/*/systemd/` into `/etc/systemd/system`, `daemon-reload`.
+4. `upgrade.php --schema`, `--defaults` (registers app and default settings; `app_defaults.php` enables provisioning (3.5) and sets `provision.template_dir` (6), each once under its DB marker; re-asserts php-fpm `ReadWritePaths` including `/usr/share/fusionpbx`), `--permissions`.
+5. `systemctl restart php8.4-fpm` (APCu).
+6. Menu restore (install, or `--restore-menu`).
+7. Enable timers and path units, including `x-provision-overlay.timer` (`systemctl enable --now`).
 
-`upgrade.sh` hooks (run after `upgrade.php --main` / `--optional` /
-`--defaults` / `--menu` / `--permissions`)
-
-1. Re-copy app dir (overwrite), chown/chmod.
-2. Re-assert ownership of `/var/lib/fusionpbx/provision_overlay` and the symlink.
-3. `runuser -u www-data -- php .../build.php --build` then `--verify`; print orphaned overrides.
-4. Re-insert nginx block only if the markers are missing; reload nginx if changed.
-5. Reinstall unit files if changed; `daemon-reload`.
-6. Never touch `provision.enabled`, `provision.template_dir`, overlay files or assets.
+On upgrade, hook problems are warnings and the previous build stays, so a
+failure never leaves new core code on the old schema. The hook never touches
+`provision.enabled`, `provision.template_dir`, overlay files or assets.
 
 CLI commands provided by the app
 
@@ -450,5 +469,6 @@ php build.php --build        # regenerate merged tree, swap current
 php build.php --status       # current build id, upstream commit, counts
 php build.php --verify       # dangling links, orphaned overrides, bad domain names; exit 1 on problems
 php build.php --rollback     # point current at previous build
-php build.php --disable      # remove symlink, disable template_dir setting
+php build.php --disable      # write .disabled, remove symlink, disable template_dir setting
+php build.php --enable       # undo --disable: rebuild, recreate symlink, enable setting, remove .disabled
 ```

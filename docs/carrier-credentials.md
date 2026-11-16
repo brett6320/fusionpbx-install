@@ -21,8 +21,9 @@ The design and its security limits are in
   and file permissions. The page shows this as a banner. Don't describe the
   system as "encrypting carrier passwords" without that qualifier.
 - **Keys.** The encryption keys are in `/etc/fusionpbx/x_carriers/keys`, with
-  a copy in `/var/backups/x_carriers-keys`. Back them up with the database (the
-  nightly `x-backup` does). A database restored without its keys loses API
+  a copy in `/var/backups/x_carriers-keys` (a daily cron job refreshes it).
+  `x-backup` leaves the keys out of its bundles on purpose, so back up that
+  directory separately. A database restored without its keys loses API
   tokens and any pending or retired secrets.
 
 ## 1. Check the Telnyx carrier defaults
@@ -38,8 +39,10 @@ seeds it with:
 | Credential Types | SIP Digest, IP Authentication, API Token |
 | API Base URL | `https://api.telnyx.com/v2` |
 
-These values are copied into each gateway the app creates. Gateways that
-already exist are not changed when you edit them here.
+These values are copied into each gateway the app creates. Editing them here
+doesn't change existing gateways right away: managed gateways take the new
+values at their next push (saving a credential or the account, Push,
+rotation, or a validity window change); adopted gateways never do.
 
 - Set **Codec Preferences** to the codecs your Telnyx connection allows, in
   order, for example `PCMU,PCMA` (empty uses the profile's codecs).
@@ -67,8 +70,9 @@ On **Carrier Credentials**, add an account:
 
 - **Carrier:** Telnyx.
 - **Account:** a name you'll recognise in route pickers, for example `Telnyx main`.
-- **Purpose:** Voice, Fax, or Voice and Fax. A fax account defaults to a
-  registering gateway and a fax route.
+- **Purpose:** Voice, Fax, or Voice and Fax. Fax and Voice and Fax accounts
+  default to a registering gateway; Fax accounts also default to the fax route
+  expression `^\*33(\d+)$`.
 
 Each domain has its own accounts. A domain can hold several Telnyx accounts,
 for example separate trunks or separate billing.
@@ -125,7 +129,9 @@ inbound destination for each number as usual (**Dialplan > Destinations**).
 5. Check **Status > SIP Status**: the gateway should show `REGED`.
 
 **Already have a Telnyx gateway?** Use **Adopt an Existing Gateway** on the
-credential page instead of Add Gateway. The app imports the gateway's password
+account page (shown for carriers with SIP digest when the domain has gateways
+to adopt) instead of Add Credential
+and Add Gateway. The app imports the gateway's password
 into a new SIP digest credential. From then on it updates only the user name,
 auth user name, realm, password and register fields; proxies and codecs stay as
 you set them.
@@ -175,7 +181,18 @@ sudo -u www-data php app/x_carrier_credentials/resources/cli/x_carriers_keyring.
 # new key: create it as root, then re-encrypt as www-data
 sudo php app/x_carrier_credentials/resources/cli/x_carriers_keyring.php rotate
 sudo -u www-data php app/x_carrier_credentials/resources/cli/x_carriers_keyring.php reencrypt
+
+# refresh the key backup now instead of at the next daily run
+sudo /etc/cron.daily/x_carriers-keybackup
 ```
+
+`resources/apps/carrier_credentials.sh upgrade --rotate-key` (from the
+installer directory, as root) does all three in one step.
+
+**Maintenance.** `x-carrier-credentials-maintenance.timer` runs every 15
+minutes. It pushes credentials whose Valid From / Valid Until window opened or
+closed, so those take effect within about 15 minutes, and erases retired
+secrets after `x_carriers > retired_retention_days` (default 30).
 
 **Restore:** restore the database, restore the key directory from
 `/var/backups/x_carriers-keys/`, then run `check`. If the keys are lost,

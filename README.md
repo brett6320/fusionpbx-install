@@ -48,9 +48,11 @@ git pull
 ./upgrade.sh --restore-menu  # also rebuild the default menu (resets menu edits)
 ```
 
-`upgrade.sh` checks packages, PHP sodium and the carrier credential keys first,
+`upgrade.sh` installs the packages it needs (rsync, ffmpeg, chrony, ipset,
+ipset-persistent), checks PHP sodium and the carrier credential keys,
 then stops our workers and moves core to `fusionpbx_commit`. It refuses to move
-core backwards, and refuses if tracked upstream files were edited locally.
+core backwards, refuses a `fusionpbx_commit` that is not on
+`fusionpbx_branch`, and refuses if tracked upstream files were edited locally.
 
 **Do not use FusionPBX's in-app source update** (Advanced > Upgrade > source
 code). It moves core off the pin, and `upgrade.sh` will then refuse to run
@@ -101,10 +103,11 @@ are kept on upgrade. Codec names: `OPUS`, `G.722`, `PCMU`, `PCMA`, `G.723.1`,
 `G.729A/B`, `G.726-32`, `iLBC`. To skip a slot, disable it or leave it empty in
 Default Settings (an empty domain setting does not override the default).
 
-Upstream's templates don't read it; the Provision Templates overrides do.
-Each override maps the names to its phone's format, skips codecs that phone
-lacks (for example OPUS on a DP750), and fills its remaining slots. Upstream
-Yealink templates keep their own `yealink_codec_*` settings. Phones pick up a
+Upstream's templates don't read these settings, and this repo ships no
+template that does. To use them, write a Provision Templates override that
+reads `{$x_codec_1}` … `{$x_codec_8}`, maps the names to the phone's format and
+skips codecs the phone lacks (for example OPUS on a DP750). Upstream Yealink
+templates keep their own `yealink_codec_*` settings. Phones pick up a
 change at their next provisioning.
 
 ## Theme
@@ -115,8 +118,9 @@ later is kept, and domains and users can still pick their own.
 
 ## Time sync
 
-chrony keeps the host clock synced, and FreeSWITCH resyncs to it every
-`timesync_interval` minutes. On EC2 (detected from the instance hardware,
+chrony keeps the host clock synced. Every `timesync_interval` minutes (default
+15; it should divide 60, since it is used as `OnCalendar=*:0/N`) FreeSWITCH is told to resync to it the next time no
+calls are up (`fsctl sync_clock_when_idle`). On EC2 (detected from the instance hardware,
 with or without the AWS settings file) chrony also uses the Amazon Time Sync
 Service at `169.254.169.123`, which works even when outbound NTP to the
 internet is blocked. The installer writes
@@ -168,8 +172,9 @@ Credentials, either:
 The default voice is `en-US-Wavenet-D` (`google_tts_voice`); the voice list
 shows the voices for `google_tts_language_code` (default `en-US`). The server
 needs outbound HTTPS to `texttospeech.googleapis.com` and
-`oauth2.googleapis.com`. The admin and superadmin groups have the
-`x_ivr_manager_phrase` permission. The credentials are read from Default
+`oauth2.googleapis.com`. Building phrases needs the `x_ivr_manager_phrase` and
+`x_ivr_manager_edit` permissions (the admin and superadmin groups have both)
+and the upstream Phrases app. The credentials are read from Default
 Settings only, never from domain or user settings.
 
 A phrase only plays when it is enabled and its language matches the call's
@@ -184,12 +189,15 @@ stays silent.
   its recordings in order with its pauses; other phrase actions (sounds, say)
   are skipped and the page says so.
 - Text-to-speech greetings keep their text: each recording in
-  `recording_message` (also shown in **Applications > Recordings**), and a
-  phrase's script, pauses included, on one line in its description (up to 255
-  characters, upstream's field size). IVR Manager shows the text
-  under the greeting with a Copy button.
-- New greetings get descriptive names, e.g. "Main Menu - Long Greeting -
-  2026-11-16 14:05" (domain time zone), unless a name is given. A phrase's
+  `recording_message` (also shown in **Applications > Recordings**). A
+  phrase's description holds the voice and the script on one line ("Google
+  Text-to-Speech, <voice>: … / [pause 1s] / …", cut at 255 characters,
+  upstream's field size). IVR Manager shows the full text under the greeting,
+  one part per line, with a **Copy Text** button.
+- Recorded and text-to-speech greetings without a name get a descriptive one,
+  e.g. "Main Menu - Long Greeting - 2026-11-16 14:05" (domain time zone). A
+  phrase's name is filled in as e.g. "Main_Menu_Greeting_2026-11-16_1405";
+  characters other than letters, digits, `_`, `.` and `-` become `_`. Its
   recordings are named "<phrase> - Part 1", "Part 2", and so on.
 
 ### Removing and deleting greetings
@@ -197,8 +205,9 @@ stays silent.
 **Remove from Menu** takes a greeting off the menu and keeps the recording or
 phrase. **Delete** in the greeting picker deletes a recording (and its audio
 file) or a phrase for good, after a confirmation, for users with
-`recording_delete` or `phrase_delete`. It is refused while anything still uses
-it: an IVR menu (greetings, sounds, ringback) or menu option, a phrase, a ring
+`x_ivr_manager_edit` and `recording_delete` (recordings) or `phrase_delete`
+(phrases). It is refused while anything still uses it: an IVR menu (greetings,
+sounds, ringback) or menu option, a phrase (when deleting a recording), a ring
 group, call center queue, call flow or conference center, or a dialplan that
 names it; the message lists what. The check matches the file name or phrase
 uuid as text, so a similarly named recording can also block a delete. Deleting
@@ -280,12 +289,14 @@ with a single start and end from before rules opens as one one-time rule.
   sends calls (or a condition disabled in Dialplan Manager) make the schedule
   no longer match its rules. IVR Manager then shows no rules and asks for
   confirmation before replacing the time condition with the rules you enter.
-  Other changes there, such as the schedule's name or fallback, are shown and
-  kept.
+  Other changes there, such as the schedule's name, number, fallback or
+  enabled state, are shown and kept. A schedule left with a single date and
+  time window opens as one one-time rule, without its label.
 - **A `24:00` end** can't be edited in the stock Time Conditions editor, which
   only offers times up to 23:59. Saving there changes it.
 - **Time zones:** weekly and annual rules are evaluated by FreeSWITCH in the
-  schedule's time zone (the domain time zone when saved), using FreeSWITCH's
+  schedule's time zone (`domain > time_zone` when saved; a User Setting of
+  the person saving overrides the domain's), using FreeSWITCH's
   own `timezones.conf.xml`. A zone missing there, or with outdated daylight
   saving rules, makes FreeSWITCH use other times than IVR Manager's "active
   now" and next dates. One time rules follow the stock editor: stored in UTC
@@ -329,8 +340,9 @@ subject prefix `[Carrier ACL]`.
 Setting up a carrier, with Telnyx as the example: [docs/carrier-credentials.md](docs/carrier-credentials.md).
 
 Carrier credentials are encrypted in our own store (libsodium). FreeSWITCH
-needs them in plaintext, so plaintext copies still exist in `v_gateways`, the
-generated gateway XML and FusionPBX's transaction log. The keys are in
+needs them in plaintext, so plaintext copies still exist in `v_gateways`, Outbound Routes (IP
+authentication tech prefixes), the generated gateway XML and FusionPBX's
+transaction log. The keys are in
 `/etc/fusionpbx/x_carriers/keys`, with a copy in
 `/var/backups/x_carriers-keys`. Back up both with the database. Without the
 keys, the stored credentials cannot be recovered.
@@ -376,13 +388,14 @@ Elastic IP; the template grants this.
   - The security groups only let these lists connect to SSH, web and SIP, so
     in practice Fail2ban then bans nobody on those ports; the security groups
     are the access control.
-  - Networks broader than /16, such as `0.0.0.0/0` in the web list, are
+  - Networks broader than /16 (IPv6: /48), such as `0.0.0.0/0` in the web list, are
     skipped with a warning: whitelisting them would turn off brute-force
     protection for everyone.
   - Addresses and networks in a `[DEFAULT]` `ignoreip` in `jail.local` are
     kept (host names are not).
   - Without the three keys, or once they are removed, there is no whitelist. An
-    invalid value only skips that list, with a warning.
+    invalid value keeps that list's last good whitelist (if any), with a
+    warning.
   - If a list can't be read (an invalid value, or a stack whose role wasn't
     updated), `x-aws-sync.service` shows as failed after each hourly run until
     it's fixed; the carrier ACL still updates.
@@ -394,8 +407,19 @@ Elastic IP; the template grants this.
 
 ## Backup and restore
 
-`x-backup` runs nightly (`x-backup.timer`, settings in `config.sh`) and writes
-one bundle per run to `/var/backups/x-install/<timestamp>/`. A bundle has:
+`x-backup` runs nightly (`x-backup.timer`) and writes one bundle per run to
+`/var/backups/x-install/<timestamp>/`. Its settings are in `config.sh` and
+take effect after `./upgrade.sh`:
+
+| Setting | Default | |
+|---|---|---|
+| `backup_dir` | `/var/backups/x-install` | absolute, not under `/var/www` |
+| `backup_time` | `*-*-* 02:30:00` | systemd `OnCalendar`, plus up to 15 min random delay; a missed run happens at boot |
+| `backup_retention_days` | 14 | |
+| `backup_min_free_percent` | 15 | refuse a backup that would leave less free space |
+| `backup_offsite_cmd` | empty | run after each backup with the bundle directory as `$1`; if it fails the run fails, the local bundle is kept |
+
+The timer skips a run while a backup or restore is going. A bundle has:
 
 - the whole `fusionpbx` database;
 - `/etc/freeswitch`, FreeSWITCH storage (voicemail, fax) and recordings;
@@ -404,7 +428,8 @@ one bundle per run to `/var/backups/x-install/<timestamp>/`. A bundle has:
 - a manifest and checksums.
 
 Bundles older than `backup_retention_days` are removed, but never the newest
-one. Run `x-backup` by hand at any time.
+one. Run `x-backup` by hand at any time (`--dir DIR`, `--no-prune`,
+`--no-offsite`).
 
 Not in a bundle:
 
@@ -442,7 +467,12 @@ cd /usr/src/x-install
 - that the archive only contains the expected paths;
 - that there is enough disk space.
 
+It also refuses when a different key with the same id is already in the key
+directory. It then shows a summary and asks you to type `restore` (`--yes`
+skips this, for unattended runs).
+
 Then it backs up the current state to `/var/backups/x-install/pre-restore/`
+(`--no-pre-backup` skips this)
 and stops services. It restores the database into a side database and swaps
 it in. The old database is kept as `fusionpbx_pre_restore_<timestamp>`. Last,
 it restores files and keys, reapplies this layer (which migrates an older
@@ -479,21 +509,20 @@ services and our timers, so a reboot does not start them either. To go live,
 turn the old host off, run `systemctl enable --now freeswitch`, then run
 `./upgrade.sh`.
 
-```
-
 ## Testing
 
 ```sh
-test/lint.sh                    # shellcheck, php -l, python syntax (needs Docker)
-test/install-test.sh [bookworm|trixie] [--keep]  # full install + upgrade in a systemd container
+test/lint.sh                    # shellcheck (local), cfn-lint if installed, php -l, python syntax, x-aws-sync signing self-test (Docker)
+test/install-test.sh [bookworm|trixie] [--keep]  # install, preflight refusal, upgrade (also --optional), EC2 time sync, AWS flow; default trixie
 test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on a fresh host and in place
 ```
 
 ## Known limitations
 
 - IVR schedules use upstream's time condition handling, including its time
-  zone behavior. Routing was tested with loopback calls in the test container,
-  not with calls from a carrier. Schedule rules have their own limitations,
+  zone behavior. Routing was tested manually with loopback calls in the test
+  container, not with calls from a carrier; the automated tests don't place
+  calls. Schedule rules have their own limitations,
   listed under [Schedule rule limitations](#schedule-rule-limitations).
 - Rebooting an endpoint reboots every phone that shares its extension.
 - The provision overlay cannot stop one tenant from reading another tenant's
@@ -501,7 +530,9 @@ test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on 
 - Carrier ACL on nftables: in `allow` mode the firewall rule only counts
   traffic. Carriers are protected from bans by the fail2ban exemption.
   `restrict` mode works as described.
-- A firewall reload (iptables-persistent, nftables) removes our rules until the
-  next apply.
+- A firewall reload or flush that is not a restart of netfilter-persistent or
+  nftables removes the carrier ACL rules (and, on AWS, the metadata guard)
+  until the next apply or boot. Run `systemctl start x-carrier-acl-apply` (and
+  `x-imds-guard apply`). Restarts re-apply them automatically.
 - On trixie, upstream's fail2ban ssh jail fails because it expects
   `/var/log/auth.log`. This is an upstream issue.
