@@ -8,7 +8,8 @@
 # - Networks broader than /16 (IPv4) or /48 (IPv6), such as 0.0.0.0/0 in a web list, are skipped with a warning:
 #   whitelisting them would turn off brute-force protection for everyone.
 # - A [DEFAULT] ignoreip in jail.local is kept (our [DEFAULT] would otherwise replace it); only IP and network tokens
-#   are copied, because Fail2ban resolves anything else as a host name.
+#   are copied, because Fail2ban resolves anything else as a host name. A [DEFAULT] ignoreip in another jail.d file is
+#   replaced, and a jail's own ignoreip in jail.local still overrides this one for that jail.
 # - Fail2ban checks the new config before the reload; on failure the previous file is restored. After a reload,
 #   addresses already banned that are now whitelisted are unbanned (a reload does not re-check existing bans).
 #
@@ -23,6 +24,7 @@ import glob
 import ipaddress
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -55,7 +57,11 @@ def list_networks():
 			raise ValueError('%s must be a regular file owned by root and writable only by root' % path)
 		with open(path, encoding='utf-8') as handle:
 			data = json.load(handle)
+		if not isinstance(data, dict) or not isinstance(data.get('entries', {}), dict):
+			raise ValueError('%s is not a prefix list file' % path)
 		for entry in data.get('entries', {}).values():
+			if not isinstance(entry, dict):
+				raise ValueError('%s is not a prefix list file' % path)
 			network = ipaddress.ip_network(entry['cidr'], strict=False)
 			if network.prefixlen < MIN_PREFIX[network.version]:
 				warn('%s in %s is broader than /%d; not whitelisted' % (network, os.path.basename(path),
@@ -74,7 +80,10 @@ def admin_networks():
 		warn('cannot read %s (%s); its ignoreip is not kept' % (JAIL_LOCAL, error))
 		return set()
 	found = set()
-	for token in parser.defaults().get('ignoreip', '').split():
+	#fail2ban separates ignoreip entries with spaces and/or commas
+	for token in re.split(r'[\s,]+', parser.defaults().get('ignoreip', '').strip()):
+		if not token:
+			continue
 		try:
 			found.add(ipaddress.ip_network(token, strict=False))
 		except ValueError:
@@ -99,7 +108,7 @@ def unban_whitelisted(networks):
 		if 'Jail list:' in line:
 			jails = [j.strip() for j in line.split(':', 1)[1].split(',') if j.strip()]
 	for jail in jails:
-		for token in fail2ban('get', jail, 'banip').stdout.split():
+		for token in re.split(r'[\s,]+', fail2ban('get', jail, 'banip').stdout):
 			try:
 				address = ipaddress.ip_address(token)
 			except ValueError:
@@ -141,17 +150,22 @@ def apply(content, networks):
 		return False
 	if not active():
 		return True
+	def restore():
+		if previous is None:
+			if os.path.exists(JAIL_FILE):
+				os.unlink(JAIL_FILE)
+		else:
+			replace(previous)
 	test = fail2ban('-t')
 	if test.returncode != 0:
 		#put the previous config back, so a later restart still works
-		if previous is None:
-			os.unlink(JAIL_FILE)
-		else:
-			replace(previous)
+		restore()
 		raise RuntimeError('Fail2ban rejected the new config, previous one restored: %s' % (test.stderr or test.stdout).strip())
 	result = fail2ban('reload')
 	if result.returncode != 0:
-		raise RuntimeError('fail2ban-client reload failed: %s' % (result.stderr or result.stdout).strip())
+		#restore too, so the next run sees a change and tries again
+		restore()
+		raise RuntimeError('fail2ban-client reload failed, previous config restored: %s' % (result.stderr or result.stdout).strip())
 	if networks:
 		unban_whitelisted(networks)
 	return True

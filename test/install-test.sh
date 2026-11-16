@@ -95,6 +95,11 @@ docker exec "$name" grep -qx 'ignoreip = 127.0.0.1/8 ::1 192.0.2.0/24 198.51.100
 #the real helper skips networks broader than /16
 docker exec "$name" bash -c 'printf "%s\n" "{\"entries\":{\"0.0.0.0/0\":{\"cidr\":\"0.0.0.0/0\"}}}" > /var/lib/x_carrier_acl/aws/allow-test.json && /usr/local/sbin/x-fail2ban-ignoreip; rm -f /var/lib/x_carrier_acl/aws/allow-test.json' 2>&1 | grep -q "0.0.0.0/0 in allow-test.json is broader" || { echo "FAIL  broad network not reported"; exit 1; }
 ! docker exec "$name" grep -q '0\.0\.0\.0/0' "$jail" || { echo "FAIL  0.0.0.0/0 whitelisted"; exit 1; }
+#the unit runs the helper after every sync (ExecStopPost=+, outside the unit's sandbox), whatever the sync's result
+docker exec "$name" systemctl start x-aws-sync.service || true
+log=$(docker exec "$name" journalctl -u x-aws-sync.service --no-pager -n 50)
+grep -q "x-fail2ban-ignoreip:" <<<"$log" || { echo "FAIL  x-aws-sync.service did not run x-fail2ban-ignoreip"; echo "$log"; exit 1; }
+! grep -q -E "Address family not supported|Read-only file system|Permission denied" <<<"$log" || { echo "FAIL  x-fail2ban-ignoreip ran inside the unit's sandbox"; echo "$log"; exit 1; }
 echo "PASS  Fail2ban whitelist from the SSH, web and endpoint lists"
 #instance metadata: www-data is refused by our rule (its counter moves); root is not matched (counter unchanged).
 #There is no metadata service in a container, so only the rule's counter tells the cases apart.

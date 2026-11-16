@@ -149,6 +149,9 @@ Elastic IP; the template grants this.
     kept (host names are not).
   - Without the three keys, or once they are removed, there is no whitelist. An
     invalid value only skips that list, with a warning.
+  - If a list can't be read (an invalid value, or a stack whose role wasn't
+    updated), `x-aws-sync.service` shows as failed after each hourly run until
+    it's fixed; the carrier ACL still updates.
 - If AWS can't be reached during install, the install continues with a
   warning. The feeds then report the failure. Fix the cause and run
   `x-aws-sync`.
