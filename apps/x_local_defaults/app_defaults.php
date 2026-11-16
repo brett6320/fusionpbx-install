@@ -112,6 +112,42 @@ if ($domains_processed == 1) {
 			unset($sql, $parameters);
 		}
 
+	//reword upstream's English email templates (resources/email_templates.php). A template is replaced only while
+	//it still has upstream's exact subject and body, so an admin's edits are kept; one that does not exist yet
+	//(app/ runs before core/, so on a fresh install core/email_templates has not inserted it) is inserted with
+	//upstream's uuid, and upstream then skips it
+		$email_templates = require __DIR__.'/resources/email_templates.php';
+		foreach ($email_templates as $email_template_uuid => $email_template) {
+			$sql = "select template_subject, template_body from v_email_templates ";
+			$sql .= "where email_template_uuid = :email_template_uuid ";
+			$parameters['email_template_uuid'] = $email_template_uuid;
+			$row = $database->select($sql, $parameters, 'row');
+			unset($sql, $parameters);
+			if (empty($row)) {
+				$sql = "insert into v_email_templates ";
+				$sql .= "(email_template_uuid, domain_uuid, template_language, template_category, template_subcategory, template_subject, template_body, template_type, template_enabled, template_description, insert_date) ";
+				$sql .= "values (:email_template_uuid, null, 'en-us', :template_category, :template_subcategory, :template_subject, :template_body, :template_type, true, :template_description, now()) ";
+				$parameters['template_category'] = $email_template['category'];
+				$parameters['template_subcategory'] = $email_template['subcategory'];
+				$parameters['template_type'] = $email_template['type'];
+				$parameters['template_description'] = $email_template['description'];
+			}
+			else if ($row['template_subject'] === $email_template['old_subject'] && $row['template_body'] === $email_template['old_body']) {
+				$sql = "update v_email_templates ";
+				$sql .= "set template_subject = :template_subject, template_body = :template_body, update_date = now() ";
+				$sql .= "where email_template_uuid = :email_template_uuid ";
+			}
+			else {
+				continue;
+			}
+			$parameters['email_template_uuid'] = $email_template_uuid;
+			$parameters['template_subject'] = $email_template['subject'];
+			$parameters['template_body'] = $email_template['body'];
+			$database->execute($sql, $parameters);
+			unset($sql, $parameters);
+		}
+		unset($email_templates, $email_template, $email_template_uuid, $row);
+
 }
 
 ?>

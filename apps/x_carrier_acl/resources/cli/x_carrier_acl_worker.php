@@ -125,7 +125,7 @@
 		x_carrier_acl_record_run($database, $run);
 		x_carrier_acl::log(LOG_WARNING, $feed['feed_name'].': '.$error.' (consecutive failures '.$failures.'); last-known-good kept');
 		if ($failures === $app->setting_int('failure_alert_after')) {
-			$alert->send('failure', $feed['feed_name'].' FAILED ('.$failures.' consecutive)', "Feed: ".$feed['feed_name']."\nURL: ".$feed['feed_url']."\nError: ".$error."\n\nThe last-known-good entries are still in place.");
+			$alert->send('failure', 'Feed update failed: '.$feed['feed_name'].' ('.$failures.' consecutive failures)', "The carrier ACL could not update this feed.\n\nFeed: ".$feed['feed_name']."\nURL: ".$feed['feed_url']."\nError: ".$error."\n\nThe last known good entries remain in place. No action is needed if the next update succeeds.");
 		}
 	}
 
@@ -262,10 +262,10 @@
 			}
 			$run['run_status'] = 'pending_approval';
 			x_carrier_acl_record_run($database, $run);
-			$body = "Feed: ".$feed['feed_name']."\nURL: ".$feed['feed_url']."\nReasons:\n  ".implode("\n  ", $reasons)."\n\n";
+			$body = "A carrier ACL update is waiting for approval.\n\nFeed: ".$feed['feed_name']."\nURL: ".$feed['feed_url']."\nReasons:\n  ".implode("\n  ", $reasons)."\n\n";
 			$body .= x_carrier_acl_alert::diff_text($proposal['added'], $proposal['removed']);
-			$body .= "\n\nApprove or reject it in Advanced > Carrier ACL > Runs.";
-			$alert->send('approval', $feed['feed_name'].' approval required (+'.$run['run_added'].'/-'.$run['run_removed'].')', $body);
+			$body .= "\n\nApprove or reject it in Advanced > Carrier ACL > Runs. Until then, the current entries remain in place.";
+			$alert->send('approval', 'Approval required: '.$feed['feed_name'].' (+'.$run['run_added'].'/-'.$run['run_removed'].')', $body);
 			return false;
 		}
 
@@ -275,7 +275,7 @@
 			$run['run_status'] = 'failed';
 			$run['run_error'] = 'apply failed: '.$result['error'];
 			x_carrier_acl_record_run($database, $run);
-			$alert->send('failure', $feed['feed_name'].' apply FAILED', "Feed: ".$feed['feed_name']."\nError: ".$result['error']."\n\nThe transaction was rolled back; the last-known-good entries are still in place.");
+			$alert->send('failure', 'Update not applied: '.$feed['feed_name'], "The carrier ACL could not save this feed's new entries.\n\nFeed: ".$feed['feed_name']."\nError: ".$result['error']."\n\nThe change was rolled back; the last known good entries remain in place.");
 			return false;
 		}
 		x_carrier_acl_update_feed($database, $feed_uuid, ['feed_consecutive_failures = 0', 'feed_last_success = now()', 'feed_last_applied = now()', 'feed_run_requested = false', 'feed_etag = :etag', 'feed_last_modified = :last_modified'], ['etag' => $response['etag'], 'last_modified' => $response['last_modified']]);
@@ -295,7 +295,7 @@
 			$reload_error = $applier->reload_acl($verify);
 			if ($reload_error !== null) {
 				$run['run_error'] = $reload_error;
-				$alert->send('failure', $feed['feed_name'].' '.$reload_error, "Feed: ".$feed['feed_name']."\nThe database was updated; the next reloadacl will pick it up.");
+				$alert->send('failure', 'FreeSWITCH ACL reload failed: '.$feed['feed_name'], "The new entries were saved, but FreeSWITCH did not reload its ACL.\n\nFeed: ".$feed['feed_name']."\nError: ".$reload_error."\n\nThe next successful reload (reloadacl) applies them.");
 			}
 		}
 		$run['run_status'] = $changed ? 'applied' : 'unchanged';
@@ -304,7 +304,7 @@
 
 		//6. change alert
 		if ($changed) {
-			$alert->send('change', $feed['feed_name'].' applied (+'.$run['run_added'].'/-'.$run['run_removed'].')', "Feed: ".$feed['feed_name']."\n\n".x_carrier_acl_alert::diff_text($proposal['added'], $proposal['removed']));
+			$alert->send('change', 'Update applied: '.$feed['feed_name'].' (+'.$run['run_added'].'/-'.$run['run_removed'].')', "The carrier ACL applied an update to this feed.\n\nFeed: ".$feed['feed_name']."\n\n".x_carrier_acl_alert::diff_text($proposal['added'], $proposal['removed']));
 		}
 		return $changed;
 	}
@@ -345,7 +345,7 @@
 			$failed_error = 'generation '.$exported.' was not applied (applier status: '.(is_array($status) ? ($status['result'] ?? 'unknown').' generation '.($status['generation'] ?? '?') : 'missing').')';
 		}
 		if ($failed_error !== null && $alerted !== $exported) {
-			$alert->send('firewall', 'firewall apply FAILED', "Generation: ".$exported."\nError: ".$failed_error."\n\nCheck: journalctl -u x-carrier-acl-apply.service");
+			$alert->send('firewall', 'Firewall update failed', "The carrier ACL could not update the host firewall.\n\nGeneration: ".$exported."\nError: ".$failed_error."\n\nDetails: journalctl -u x-carrier-acl-apply.service");
 			@file_put_contents($alerted_file, $exported."\n");
 		}
 	}
@@ -410,7 +410,7 @@
 		x_carrier_acl::log(LOG_INFO, 'entries applied; firewall set unchanged');
 	}
 	if ($snapshot['error'] !== null) {
-		$alert->send('firewall', 'firewall snapshot FAILED', $snapshot['error']);
+		$alert->send('firewall', 'Firewall snapshot failed', "The carrier ACL could not write the firewall snapshot.\n\nError: ".$snapshot['error']);
 	}
 	elseif ($snapshot['written']) {
 		foreach ($GLOBALS['x_carrier_acl_applied_runs'] as $run_uuid) {

@@ -199,7 +199,7 @@ After all feeds: if any feed applied, or the snapshot on disk does not match the
 
 ### 5.4 Alerts
 
-Upstream `email` class, which inserts into `v_email_queue` when `email_queue.enabled` is true and sends directly otherwise (`resources/classes/email.php:264-301`); the queue is drained by the stock `email_queue.service` (`app/email_queue/resources/service/debian/email_queue.service`). The worker sets `recipients` from `x_carrier_acl.alert_email`, falling back to the global `email.smtp_from`, and `domain_uuid` to the first domain so the email settings resolve. Subjects: `[x_carrier_acl] <feed> approval required (+N/-M)`, `... applied (+N/-M)`, `... FAILED (3 consecutive)`, `... firewall apply FAILED`. Bodies are plain text with the diff; CIDRs are what they are, no HTML. Every alert is also a `syslog(LOG_NOTICE|LOG_ERR)` line with ident `x_carrier_acl` and a run row.
+Upstream `email` class, which inserts into `v_email_queue` when `email_queue.enabled` is true and sends directly otherwise (`resources/classes/email.php:264-301`); the queue is drained by the stock `email_queue.service` (`app/email_queue/resources/service/debian/email_queue.service`). The worker sets `recipients` from `x_carrier_acl.alert_email`, falling back to the global `email.smtp_from`, and `domain_uuid` to the first domain so the email settings resolve. Subjects: `[Carrier ACL] Approval required: <feed> (+N/-M)`, `... Update applied: <feed> (+N/-M)`, `... Feed update failed: <feed> (3 consecutive failures)`, `... Firewall update failed`. Bodies are plain text with the diff; CIDRs are what they are, no HTML. Every alert is also a `syslog(LOG_NOTICE|LOG_ERR)` line with ident `x_carrier_acl` and a run row.
 
 ## 6. FreeSWITCH ACL projection
 

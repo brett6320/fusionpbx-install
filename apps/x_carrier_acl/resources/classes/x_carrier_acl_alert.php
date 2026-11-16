@@ -34,7 +34,7 @@ class x_carrier_acl_alert {
 
 	/**
 	 * @param string $event change, failure, approval or firewall (firewall is gated by "failure" in alert_on)
-	 * @param string $subject subject without the "[x_carrier_acl] " prefix
+	 * @param string $subject subject without the "[Carrier ACL] " prefix
 	 * @param string $body plain text
 	 */
 	public function send(string $event, string $subject, string $body): void {
@@ -70,7 +70,7 @@ class x_carrier_acl_alert {
 
 		$email = new email(['database' => $this->database, 'settings' => $settings, 'domain_uuid' => $domain_uuid, 'user_uuid' => '']);
 		$email->recipients = implode(',', $valid);
-		$email->subject = '[x_carrier_acl] '.$subject;
+		$email->subject = '[Carrier ACL] '.$subject;
 		//the email class sends HTML (MsgHTML); keep the text exactly as written
 		$email->body = "<pre>".htmlspecialchars($body, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8')."</pre>";
 		$email->from_address = (string)$settings->get('email', 'smtp_from', '');
