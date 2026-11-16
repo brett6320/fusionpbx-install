@@ -1,0 +1,13 @@
+# Example of /etc/default/fusionpbx-aws, written by the stack's user data on
+# first boot. All values are placeholders. To write it by hand on an older
+# instance, fill in the stack's parameters and outputs and drop these comments.
+AWS_REGION=us-east-1
+AWS_STACK_NAME=pbx1
+INSTANCE_ID=i-0123456789abcdef0
+ELASTIC_IP=203.0.113.10
+ELASTIC_IP_ALLOCATION_ID=eipalloc-0123456789abcdef0
+TELNYX_SIGNALLING_PREFIX_LIST_ID=pl-0123456789abcdef0
+TELNYX_MEDIA_PREFIX_LIST_ID=pl-0fedcba9876543210
+SSH_PREFIX_LIST_ID=pl-0aaaaaaaaaaaaaaa1
+WEB_PREFIX_LIST_ID=pl-0aaaaaaaaaaaaaaa2
+ENDPOINT_PREFIX_LIST_ID=pl-0aaaaaaaaaaaaaaa3

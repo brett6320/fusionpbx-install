@@ -10,6 +10,13 @@ echo "== shellcheck"
 # shellcheck disable=SC2046
 shellcheck -x -P SCRIPTDIR $(git ls-files --cached --others --exclude-standard '*.sh') resources/sbin/x-backup resources/sbin/x-imds-guard || status=1
 
+echo "== cfn-lint"
+if command -v cfn-lint >/dev/null; then
+	cfn-lint deploy/aws/*.yaml || status=1
+else
+	echo "cfn-lint not installed, skipping"
+fi
+
 echo "== php -l (php:8.4-cli)"
 docker run --rm -v "$PWD:/src:ro" -w /src php:8.4-cli \
 	sh -c 'rc=0; for f in $(find apps test -name "*.php"); do php -l "$f" >/dev/null || rc=1; done; exit $rc' || status=1

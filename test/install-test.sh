@@ -71,6 +71,9 @@ ELASTIC_IP=203.0.113.10
 ELASTIC_IP_ALLOCATION_ID=eipalloc-0123456789abcdef0
 TELNYX_SIGNALLING_PREFIX_LIST_ID=pl-0123456789abcdef0
 TELNYX_MEDIA_PREFIX_LIST_ID=pl-0fedcba9876543210
+SSH_PREFIX_LIST_ID=pl-0aaaaaaaaaaaaaaa1
+WEB_PREFIX_LIST_ID=pl-0aaaaaaaaaaaaaaa2
+ENDPOINT_PREFIX_LIST_ID=pl-0aaaaaaaaaaaaaaa3
 CONF'
 docker exec -e X_AWS_SYNC_CMD=/usr/src/x-install/test/fake-x-aws-sync "$name" bash /usr/src/x-install/resources/aws.sh install
 psql_value() {
@@ -83,6 +86,23 @@ echo "PASS  vars.xml and FreeSWITCH use the Elastic IP"
 entries=$(psql_value "select e.entry_role || ':' || count(*) from v_x_carrier_acl_entries e join v_x_carrier_acl_feeds f using (x_carrier_acl_feed_uuid) where f.feed_url like 'file://%' group by e.entry_role order by 1")
 [ "$entries" = "$(printf 'media:2\nsignaling:2')" ] || { echo "FAIL  AWS feed entries: $entries"; exit 1; }
 echo "PASS  AWS prefix lists applied to the carrier ACL"
+jail=/etc/fail2ban/jail.d/x-aws-ignoreip.local
+docker exec "$name" grep -qx 'ignoreip = 127.0.0.1/8 ::1 192.0.2.0/24 198.51.100.0/24 203.0.113.64/26' "$jail" || { docker exec "$name" cat "$jail"; echo "FAIL  Fail2ban whitelist"; exit 1; }
+#a list dropped from the settings file leaves the whitelist
+docker exec "$name" sed -i '/^WEB_PREFIX_LIST_ID=/d' /etc/default/fusionpbx-aws
+docker exec -e X_AWS_SYNC_CMD=/usr/src/x-install/test/fake-x-aws-sync "$name" bash /usr/src/x-install/resources/aws.sh upgrade >/dev/null
+docker exec "$name" grep -qx 'ignoreip = 127.0.0.1/8 ::1 192.0.2.0/24 198.51.100.0/24' "$jail" || { docker exec "$name" cat "$jail"; echo "FAIL  Fail2ban whitelist after removing a list"; exit 1; }
+#the real helper skips networks broader than /16
+#(captured first: with pipefail, grep -q closing the pipe early would fail the pipeline)
+out=$(docker exec "$name" bash -c 'printf "%s\n" "{\"entries\":{\"0.0.0.0/0\":{\"cidr\":\"0.0.0.0/0\"}}}" > /var/lib/x_carrier_acl/aws/allow-test.json && /usr/local/sbin/x-fail2ban-ignoreip; rm -f /var/lib/x_carrier_acl/aws/allow-test.json' 2>&1) || true
+grep -q "0.0.0.0/0 in allow-test.json is broader" <<<"$out" || { printf '%s\n' "$out"; echo "FAIL  broad network not reported"; exit 1; }
+! docker exec "$name" grep -q '0\.0\.0\.0/0' "$jail" || { echo "FAIL  0.0.0.0/0 whitelisted"; exit 1; }
+#the unit runs the helper after every sync (ExecStopPost=+, outside the unit's sandbox), whatever the sync's result
+docker exec "$name" systemctl start x-aws-sync.service || true
+log=$(docker exec "$name" journalctl -u x-aws-sync.service --no-pager -n 50)
+grep -q "x-fail2ban-ignoreip:" <<<"$log" || { echo "FAIL  x-aws-sync.service did not run x-fail2ban-ignoreip"; echo "$log"; exit 1; }
+! grep -q -E "Address family not supported|Read-only file system|Permission denied" <<<"$log" || { echo "FAIL  x-fail2ban-ignoreip ran inside the unit's sandbox"; echo "$log"; exit 1; }
+echo "PASS  Fail2ban whitelist from the SSH, web and endpoint lists"
 #instance metadata: www-data is refused by our rule (its counter moves); root is not matched (counter unchanged).
 #There is no metadata service in a container, so only the rule's counter tells the cases apart.
 docker exec "$name" /usr/local/sbin/x-imds-guard check || { echo "FAIL  metadata guard not applied"; exit 1; }

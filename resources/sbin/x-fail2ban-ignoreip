@@ -1,0 +1,207 @@
+#!/usr/bin/python3 -I
+# Keep Fail2ban from banning the addresses in the AWS SSH, web and endpoint prefix lists. x-aws-sync writes the lists
+# to /var/lib/x_carrier_acl/aws/allow-*.json; this writes their networks as the [DEFAULT] ignoreip of every jail in
+# /etc/fail2ban/jail.d/x-aws-ignoreip.local and reloads Fail2ban when that file changes. Every upstream jail bans all
+# ports, so a whitelist for one jail only would still let another (such as a provisioning 404 jail) cut off an
+# office's phones. No allow-*.json removes the file.
+#
+# - Networks broader than /16 (IPv4) or /48 (IPv6), such as 0.0.0.0/0 in a web list, are skipped with a warning:
+#   whitelisting them would turn off brute-force protection for everyone.
+# - A [DEFAULT] ignoreip in jail.local is kept (our [DEFAULT] would otherwise replace it); only IP and network tokens
+#   are copied, because Fail2ban resolves anything else as a host name. A [DEFAULT] ignoreip in another jail.d file is
+#   replaced, and a jail's own ignoreip in jail.local still overrides this one for that jail.
+# - Fail2ban checks the new config before the reload; on failure the previous file is restored. After a reload,
+#   addresses already banned that are now whitelisted are unbanned (a reload does not re-check existing bans).
+#
+# Runs as root (after x-aws-sync, and from resources/aws.sh). Standard library only.
+#
+# Usage: x-fail2ban-ignoreip           write the whitelist; exit 1 on failure
+#        x-fail2ban-ignoreip --remove  remove the whitelist
+
+import configparser
+import fcntl
+import glob
+import ipaddress
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+
+LIST_DIR = '/var/lib/x_carrier_acl/aws'
+JAIL_DIR = '/etc/fail2ban/jail.d'
+JAIL_FILE = os.path.join(JAIL_DIR, 'x-aws-ignoreip.local')
+JAIL_LOCAL = '/etc/fail2ban/jail.local'
+LOCK = '/run/x-fail2ban-ignoreip.lock'
+#fail2ban's own default, which a [DEFAULT] ignoreip replaces
+LOCAL = ['127.0.0.1/8', '::1']
+MIN_PREFIX = {4: 16, 6: 48}
+
+
+def warn(message):
+	print('x-fail2ban-ignoreip: %s' % message, file=sys.stderr)
+
+
+def trusted(path):
+	"""Root-owned regular file that only root can write, so the whitelist only comes from x-aws-sync."""
+	info = os.lstat(path)
+	return stat.S_ISREG(info.st_mode) and info.st_uid == 0 and not info.st_mode & 0o022
+
+
+def list_networks():
+	found = set()
+	for path in sorted(glob.glob(os.path.join(LIST_DIR, 'allow-*.json'))):
+		if not trusted(path):
+			raise ValueError('%s must be a regular file owned by root and writable only by root' % path)
+		with open(path, encoding='utf-8') as handle:
+			data = json.load(handle)
+		if not isinstance(data, dict) or not isinstance(data.get('entries', {}), dict):
+			raise ValueError('%s is not a prefix list file' % path)
+		for entry in data.get('entries', {}).values():
+			if not isinstance(entry, dict):
+				raise ValueError('%s is not a prefix list file' % path)
+			network = ipaddress.ip_network(entry['cidr'], strict=False)
+			if network.prefixlen < MIN_PREFIX[network.version]:
+				warn('%s in %s is broader than /%d; not whitelisted' % (network, os.path.basename(path),
+					MIN_PREFIX[network.version]))
+				continue
+			found.add(network)
+	return found
+
+
+def admin_networks():
+	"""[DEFAULT] ignoreip from jail.local, IP and network tokens only."""
+	parser = configparser.RawConfigParser(interpolation=None, strict=False)
+	try:
+		parser.read(JAIL_LOCAL, encoding='utf-8')
+	except configparser.Error as error:
+		warn('cannot read %s (%s); its ignoreip is not kept' % (JAIL_LOCAL, error))
+		return set()
+	found = set()
+	#fail2ban separates ignoreip entries with spaces and/or commas
+	for token in re.split(r'[\s,]+', parser.defaults().get('ignoreip', '').strip()):
+		if not token:
+			continue
+		try:
+			found.add(ipaddress.ip_network(token, strict=False))
+		except ValueError:
+			warn('ignoreip %r in %s is not an address or network; not kept' % (token, JAIL_LOCAL))
+	#already in LOCAL
+	return found - {ipaddress.ip_network(n, strict=False) for n in LOCAL}
+
+
+def fail2ban(*args):
+	return subprocess.run(['fail2ban-client', *args], capture_output=True, text=True)
+
+
+def active():
+	return subprocess.run(['systemctl', 'is-active', '--quiet', 'fail2ban']).returncode == 0
+
+
+def unban_whitelisted(networks):
+	"""A reload keeps existing bans without checking them against the new ignoreip."""
+	status = fail2ban('status')
+	jails = []
+	for line in status.stdout.splitlines():
+		if 'Jail list:' in line:
+			jails = [j.strip() for j in line.split(':', 1)[1].split(',') if j.strip()]
+	for jail in jails:
+		for token in re.split(r'[\s,]+', fail2ban('get', jail, 'banip').stdout):
+			try:
+				address = ipaddress.ip_address(token)
+			except ValueError:
+				continue
+			if any(address in network for network in networks):
+				if fail2ban('set', jail, 'unbanip', token).returncode == 0:
+					print('x-fail2ban-ignoreip: unbanned %s in %s (now whitelisted)' % (token, jail))
+
+
+def replace(content):
+	"""Write (or with None, remove) the file; returns the previous content (None if there was none), or False when
+	nothing changed."""
+	try:
+		with open(JAIL_FILE, encoding='utf-8') as current:
+			previous = current.read()
+	except FileNotFoundError:
+		previous = None
+	if previous == content:
+		return False
+	if content is None:
+		os.unlink(JAIL_FILE)
+		return previous
+	#".tmp": fail2ban reads only *.conf and *.local, so a half-written file is never picked up
+	handle, temp = tempfile.mkstemp(dir=JAIL_DIR, prefix='.x-aws-ignoreip.', suffix='.tmp')
+	try:
+		with os.fdopen(handle, 'w', encoding='utf-8') as out:
+			out.write(content)
+		os.chmod(temp, 0o644)
+		os.replace(temp, JAIL_FILE)
+	except BaseException:
+		os.unlink(temp)
+		raise
+	return previous
+
+
+def apply(content, networks):
+	previous = replace(content)
+	if previous is False:
+		return False
+	if not active():
+		return True
+	def restore():
+		if previous is None:
+			if os.path.exists(JAIL_FILE):
+				os.unlink(JAIL_FILE)
+		else:
+			replace(previous)
+	test = fail2ban('-t')
+	if test.returncode != 0:
+		#put the previous config back, so a later restart still works
+		restore()
+		raise RuntimeError('Fail2ban rejected the new config, previous one restored: %s' % (test.stderr or test.stdout).strip())
+	result = fail2ban('reload')
+	if result.returncode != 0:
+		#restore too, so the next run sees a change and tries again
+		restore()
+		raise RuntimeError('fail2ban-client reload failed, previous config restored: %s' % (result.stderr or result.stdout).strip())
+	if networks:
+		unban_whitelisted(networks)
+	return True
+
+
+def main():
+	args = sys.argv[1:]
+	if args not in ([], ['--remove']):
+		sys.exit('usage: x-fail2ban-ignoreip [--remove]')
+	if not os.path.isdir(JAIL_DIR):
+		print('x-fail2ban-ignoreip: %s does not exist (Fail2ban not installed); nothing to do' % JAIL_DIR)
+		return
+	try:
+		with open(LOCK, 'w') as lock:
+			#aws.sh and the timer's unit can run at the same time
+			fcntl.flock(lock, fcntl.LOCK_EX)
+			if args == ['--remove']:
+				changed = apply(None, set())
+				print('x-fail2ban-ignoreip: whitelist %s' % ('removed' if changed else 'not present'))
+				return
+			listed = list_networks()
+			if not listed:
+				changed = apply(None, set())
+				print('x-fail2ban-ignoreip: no AWS whitelist networks%s' % (', whitelist removed' if changed else ''))
+				return
+			networks = listed | admin_networks()
+			ordered = sorted(networks, key=lambda n: (n.version, n))
+			content = ('# Managed by x-fail2ban-ignoreip from the AWS prefix lists in /etc/default/fusionpbx-aws, plus\n'
+				'# the [DEFAULT] ignoreip of jail.local. Do not edit: it is rewritten after every x-aws-sync run.\n'
+				'[DEFAULT]\n'
+				'ignoreip = %s\n' % ' '.join(LOCAL + [str(n) for n in ordered]))
+			changed = apply(content, networks)
+			print('x-fail2ban-ignoreip: %d networks whitelisted%s' % (len(listed), '' if changed else ' (unchanged)'))
+	except (OSError, ValueError, KeyError, RuntimeError) as error:
+		sys.exit('x-fail2ban-ignoreip: %s' % error)
+
+
+if __name__ == '__main__':
+	main()

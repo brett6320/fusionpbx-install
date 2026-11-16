@@ -1,0 +1,516 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  FusionPBX host: one c6a.large Debian 13 (trixie) instance with an Elastic IP
+  and security groups for VoIP endpoints, Telnyx signalling, Telnyx media,
+  web management and SSH,
+  each limited to its own customer-managed prefix list. Run install.sh on the
+  host after the stack is up.
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label: {default: Instance}
+        Parameters: [InstanceType, ImageId, PinnedImageId, KeyName, RootVolumeSize]
+      - Label: {default: Network}
+        Parameters: [VpcId, SubnetId]
+      - Label: {default: Trusted endpoints}
+        Parameters: [EndpointPrefixListId, TelnyxSignallingPrefixListId, TelnyxMediaPrefixListId, WebPrefixListId, SshPrefixListId]
+      - Label: {default: Backups}
+        Parameters: [BackupAdminRoleName]
+      - Label: {default: Tags}
+        Parameters: [Environment, ClientID, AppCatID]
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: c6a.large
+    Description: EC2 instance type.
+
+  ImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/debian/release/13/latest/amd64
+    Description: >-
+      Public SSM parameter that resolves to the AMI. The default is the latest
+      official Debian 13 amd64 image. Use .../arm64 only with a Graviton
+      instance type.
+
+  PinnedImageId:
+    Type: String
+    Default: ""
+    Description: >-
+      AMI ID to use instead of ImageId. CloudFormation resolves ImageId again on
+      every stack update, and a new AMI replaces the instance. After the first
+      deploy, set this to the AmiId output and keep it on every update.
+
+  KeyName:
+    Type: String
+    Default: ""
+    Description: EC2 key pair for SSH (user "admin"). Leave empty for none.
+
+  RootVolumeSize:
+    Type: Number
+    Default: 40
+    MinValue: 20
+    Description: Root volume size in GiB (gp3, encrypted).
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC for the security groups.
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet (routed to an internet gateway) in VpcId.
+
+  EndpointPrefixListId:
+    Type: String
+    AllowedPattern: 'pl-[0-9a-f]+'
+    Description: >-
+      Customer-managed IPv4 prefix list of VoIP endpoints (phones, softphones)
+      allowed to reach the internal SIP profile (UDP 5060, TCP 5060-5061) and
+      RTP (UDP 16384-32768).
+
+  TelnyxSignallingPrefixListId:
+    Type: String
+    AllowedPattern: 'pl-[0-9a-f]+'
+    Description: >-
+      Customer-managed IPv4 prefix list of Telnyx SIP addresses allowed to
+      reach the external SIP profile (UDP 5080, TCP 5080-5081).
+
+  TelnyxMediaPrefixListId:
+    Type: String
+    AllowedPattern: 'pl-[0-9a-f]+'
+    Description: >-
+      Customer-managed IPv4 prefix list of Telnyx media addresses allowed to
+      send RTP (UDP 16384-32768).
+
+  WebPrefixListId:
+    Type: String
+    AllowedPattern: 'pl-[0-9a-f]+'
+    Description: Customer-managed IPv4 prefix list allowed to reach the web UI (TCP 80, 443).
+
+  SshPrefixListId:
+    Type: String
+    AllowedPattern: 'pl-[0-9a-f]+'
+    Description: Customer-managed IPv4 prefix list allowed to SSH (TCP 22) and ping.
+
+  Environment:
+    Type: String
+    MinLength: 1
+    Description: Environment tag on every taggable resource.
+
+  ClientID:
+    Type: String
+    MinLength: 1
+    Description: ClientID tag on every taggable resource.
+
+  AppCatID:
+    Type: String
+    MinLength: 1
+    Description: AppCatID tag on every taggable resource.
+
+  BackupAdminRoleName:
+    Type: String
+    AllowedPattern: '[\w+=,.@-]{1,64}'
+    Description: >-
+      IAM role in this account (no path) with full control of the backup
+      bucket. Other principals, except the instance role, can only read it.
+      Deploy and update the stack as this role.
+
+Conditions:
+  HasKeyName: !Not [!Equals [!Ref KeyName, ""]]
+  HasPinnedImageId: !Not [!Equals [!Ref PinnedImageId, ""]]
+
+Resources:
+  # One security group per prefix list. Ports match the FreeSWITCH profiles
+  # FusionPBX installs: internal 5060/5061 (phones register here), external
+  # 5080/5081 (carrier gateways), RTP 16384-32768. A rule that references a
+  # prefix list counts as the list's max entries against the group's quota
+  # (default 60 inbound rules). Telnyx signalling and media are separate
+  # groups so each fits: 2 rules x 25 and 1 rule x 30. Five groups is the
+  # default maximum per network interface.
+  # Retained like the instance: a kept instance keeps its firewall, and a stack
+  # delete doesn't fail on groups still attached to it.
+  EndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} SIP and RTP from VoIP endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: udp, FromPort: 5060, ToPort: 5060, SourcePrefixListId: !Ref EndpointPrefixListId, Description: SIP}
+        - {IpProtocol: tcp, FromPort: 5060, ToPort: 5061, SourcePrefixListId: !Ref EndpointPrefixListId, Description: SIP and SIP-TLS}
+        - {IpProtocol: udp, FromPort: 16384, ToPort: 32768, SourcePrefixListId: !Ref EndpointPrefixListId, Description: RTP}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-endpoints"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  TelnyxSignallingSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} SIP from Telnyx
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: udp, FromPort: 5080, ToPort: 5080, SourcePrefixListId: !Ref TelnyxSignallingPrefixListId, Description: SIP}
+        - {IpProtocol: tcp, FromPort: 5080, ToPort: 5081, SourcePrefixListId: !Ref TelnyxSignallingPrefixListId, Description: SIP and SIP-TLS}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-telnyx-signalling"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  TelnyxMediaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} RTP from Telnyx
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: udp, FromPort: 16384, ToPort: 32768, SourcePrefixListId: !Ref TelnyxMediaPrefixListId, Description: RTP}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-telnyx-media"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} web management from trusted endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 80, ToPort: 80, SourcePrefixListId: !Ref WebPrefixListId, Description: HTTP}
+        - {IpProtocol: tcp, FromPort: 443, ToPort: 443, SourcePrefixListId: !Ref WebPrefixListId, Description: HTTPS}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-web"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  SshSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      GroupDescription: !Sub ${AWS::StackName} SSH from trusted endpoints
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - {IpProtocol: tcp, FromPort: 22, ToPort: 22, SourcePrefixListId: !Ref SshPrefixListId, Description: SSH}
+        # For ICMP, FromPort is the type and ToPort the code: echo request, any code.
+        - {IpProtocol: icmp, FromPort: 8, ToPort: -1, SourcePrefixListId: !Ref SshPrefixListId, Description: Ping}
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-ssh"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - {Key: Name, Value: !Ref AWS::StackName}
+            - {Key: Environment, Value: !Ref Environment}
+            - {Key: ClientID, Value: !Ref ClientID}
+            - {Key: AppCatID, Value: !Ref AppCatID}
+      LaunchTemplateData:
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: !Ref RootVolumeSize
+              Encrypted: true
+              DeleteOnTermination: true
+
+  # A change to the AMI, key pair, subnet or launch template replaces the
+  # instance. Keep the old one (and its data) rather than deleting it, and keep
+  # it when the stack is deleted too.
+  Instance:
+    Type: AWS::EC2::Instance
+    UpdateReplacePolicy: Retain
+    DeletionPolicy: Retain
+    Properties:
+      InstanceType: !Ref InstanceType
+      ImageId: !If [HasPinnedImageId, !Ref PinnedImageId, !Ref ImageId]
+      KeyName: !If [HasKeyName, !Ref KeyName, !Ref AWS::NoValue]
+      IamInstanceProfile: !Ref InstanceProfile
+      DisableApiTermination: true
+      PropagateTagsToVolumeOnCreation: true
+      # Official Debian AMIs don't ship the SSM agent. User data lives here, not
+      # in the launch template: changing it stops and starts the instance, while
+      # a launch template change replaces it. cloud-init runs it on first boot
+      # only. The retries cover the gap before the Elastic IP is associated.
+      # It first writes /etc/default/fusionpbx-aws (no network needed, so a
+      # failure can't block the agent), so the application can
+      # configure carrier ACLs and SIP addresses from the Telnyx lists and the
+      # Elastic IP, and Fail2ban's whitelist from the SSH, web and endpoint
+      # lists (the instance role can read all of them).
+      # Write shell variables without braces: !Sub would expand ${...}.
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -eu
+          instance_id=$(cat /var/lib/cloud/data/instance-id)
+          cat > /etc/default/fusionpbx-aws <<EOF
+          AWS_REGION=${AWS::Region}
+          AWS_STACK_NAME=${AWS::StackName}
+          INSTANCE_ID=$instance_id
+          ELASTIC_IP=${ElasticIp}
+          ELASTIC_IP_ALLOCATION_ID=${ElasticIp.AllocationId}
+          TELNYX_SIGNALLING_PREFIX_LIST_ID=${TelnyxSignallingPrefixListId}
+          TELNYX_MEDIA_PREFIX_LIST_ID=${TelnyxMediaPrefixListId}
+          SSH_PREFIX_LIST_ID=${SshPrefixListId}
+          WEB_PREFIX_LIST_ID=${WebPrefixListId}
+          ENDPOINT_PREFIX_LIST_ID=${EndpointPrefixListId}
+          EOF
+          chmod 0644 /etc/default/fusionpbx-aws
+          command -v curl >/dev/null || { apt-get update && apt-get install -y curl; }
+          arch=$(dpkg --print-architecture)
+          deb=$(mktemp --suffix=.deb)
+          curl -fsSL --retry 20 --retry-all-errors --retry-delay 6 -o "$deb" \
+            "https://s3.${AWS::Region}.${AWS::URLSuffix}/amazon-ssm-${AWS::Region}/latest/debian_$arch/amazon-ssm-agent.deb"
+          dpkg -i "$deb"
+          rm -f "$deb"
+          systemctl enable --now amazon-ssm-agent
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref EndpointSecurityGroup
+        - !Ref TelnyxSignallingSecurityGroup
+        - !Ref TelnyxMediaSecurityGroup
+        - !Ref WebSecurityGroup
+        - !Ref SshSecurityGroup
+      # AWS Backup selects the instance by this tag (see backup-selection.json).
+      Tags:
+        - {Key: Name, Value: !Ref AWS::StackName}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+        - {Key: BackupPlan, Value: fusionpbx}
+
+  # SIP peers and phones need an address that survives stop/start. Retained
+  # like the instance, so a stack delete or replacement never releases it.
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Domain: vpc
+      Tags:
+        - {Key: Name, Value: !Ref AWS::StackName}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  # Retained too, so a stack delete leaves the address on the kept instance.
+  # On replacement the new association has already moved the address, so
+  # keeping the old one changes nothing.
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AllocationId: !GetAtt ElasticIp.AllocationId
+      InstanceId: !Ref Instance
+
+  # SSM (Session Manager, Run Command, Patch Manager). The instance can also
+  # write new backups and read them back for a restore. The bucket policy
+  # makes this write-once: it can't delete or overwrite anything.
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-instance"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+      Policies:
+        - PolicyName: backup-write
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [s3:PutObject, s3:GetObject, s3:GetObjectVersion, s3:AbortMultipartUpload]
+                Resource: !Sub ${BackupBucket.Arn}/*
+              - Effect: Allow
+                Action: [s3:ListBucket, s3:ListBucketVersions]
+                Resource: !GetAtt BackupBucket.Arn
+        # Read the prefix lists (Telnyx for the carrier ACL; SSH, web and
+        # endpoints for the Fail2ban whitelist) and the Elastic IP named in
+        # /etc/default/fusionpbx-aws. The two Describe calls have no
+        # resource-level permissions, so they take "*", limited to this region.
+        # Any account in the list ARNs, in case a list is shared through RAM.
+        - PolicyName: carrier-discovery
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: ec2:GetManagedPrefixListEntries
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${TelnyxSignallingPrefixListId}
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${TelnyxMediaPrefixListId}
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${SshPrefixListId}
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${WebPrefixListId}
+                  - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:*:prefix-list/${EndpointPrefixListId}
+              - Effect: Allow
+                Action: ec2:DescribeAddressesAttribute
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:elastic-ip/${ElasticIp.AllocationId}
+              - Effect: Allow
+                Action: [ec2:DescribeManagedPrefixLists, ec2:DescribeAddresses]
+                Resource: "*"
+                Condition:
+                  StringEquals: {aws:RequestedRegion: !Ref AWS::Region}
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref InstanceRole]
+
+  BackupBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - {Key: Name, Value: !Sub "${AWS::StackName}-backups"}
+        - {Key: Environment, Value: !Ref Environment}
+        - {Key: ClientID, Value: !Ref ClientID}
+        - {Key: AppCatID, Value: !Ref AppCatID}
+
+  # A ceiling on top of IAM: the admin role has full control, the instance role
+  # can also write (but never delete), and everyone else can at most read, even
+  # if their IAM policies, or a policy someone adds to the instance role, allow
+  # more. Retained so a stack delete or rollback never strips the protection.
+  BackupBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Bucket: !Ref BackupBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub ${BackupBucket.Arn}/*
+            Condition:
+              Bool: {aws:SecureTransport: "false"}
+          # Naming the role as a principal makes S3 reject the policy if the
+          # role doesn't exist, so a typo fails the deploy instead of locking
+          # everyone out of the bucket.
+          - Sid: AdminFullControl
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${BackupAdminRoleName}
+            Action: s3:*
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub ${BackupBucket.Arn}/*
+          - Sid: ReadOrUploadOnlyExceptAdmin
+            Effect: Deny
+            Principal: "*"
+            NotAction: [s3:Get*, s3:List*, s3:PutObject, s3:AbortMultipartUpload]
+            Resource:
+              - !GetAtt BackupBucket.Arn
+              - !Sub ${BackupBucket.Arn}/*
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${BackupAdminRoleName}
+          - Sid: UploadOnlyInstanceAndAdmin
+            Effect: Deny
+            Principal: "*"
+            Action: [s3:PutObject, s3:AbortMultipartUpload]
+            Resource: !Sub ${BackupBucket.Arn}/*
+            Condition:
+              ArnNotEquals:
+                aws:PrincipalArn:
+                  - !GetAtt InstanceRole.Arn
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${BackupAdminRoleName}
+          # WORM for the instance: it can only create new objects, never
+          # replace one. A create (PutObject, CompleteMultipartUpload) must send
+          # If-None-Match: *, which S3 rejects when the key already exists.
+          # Multipart setup and part uploads aren't creates, so they pass.
+          - Sid: InstanceCreateOnly
+            Effect: Deny
+            Principal: "*"
+            Action: s3:PutObject
+            Resource: !Sub ${BackupBucket.Arn}/*
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !GetAtt InstanceRole.Arn
+              Bool:
+                s3:ObjectCreationOperation: "true"
+              "Null":
+                s3:if-none-match: "true"
+
+Outputs:
+  InstanceId:
+    Value: !Ref Instance
+  AmiId:
+    Description: AMI the instance runs. Pass it as PinnedImageId on updates.
+    Value: !If [HasPinnedImageId, !Ref PinnedImageId, !Ref ImageId]
+  PublicIp:
+    Value: !Ref ElasticIp
+  WebUrl:
+    Value: !Sub https://${ElasticIp}/
+  SshCommand:
+    Value: !Sub ssh admin@${ElasticIp}
+  EndpointSecurityGroupId:
+    Value: !Ref EndpointSecurityGroup
+  TelnyxSignallingSecurityGroupId:
+    Value: !Ref TelnyxSignallingSecurityGroup
+  TelnyxMediaSecurityGroupId:
+    Value: !Ref TelnyxMediaSecurityGroup
+  BackupBucketName:
+    Value: !Ref BackupBucket
+  InstanceRoleArn:
+    Value: !GetAtt InstanceRole.Arn
+  WebSecurityGroupId:
+    Value: !Ref WebSecurityGroup
+  SshSecurityGroupId:
+    Value: !Ref SshSecurityGroup
