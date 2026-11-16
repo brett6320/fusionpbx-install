@@ -87,6 +87,19 @@ A default install has a self-signed certificate, which most phones reject.
 Install a trusted certificate (upstream ships a Let's Encrypt script) or turn
 off certificate checks on the phones.
 
+## Web login sessions
+
+A web login ends about 8 hours after its last activity (`session_lifetime` in
+`config.sh`, in seconds). FusionPBX has no setting for this: a login lasts as
+long as PHP keeps its session file, so the installer sets
+`session.gc_maxlifetime` in php-fpm's `php.ini`, where Debian's session cleanup
+also reads it. The cleanup runs every 30 minutes in whole minutes, so a login
+can last up to 30 minutes longer. A page that refreshes itself, such as a
+dashboard with live calls, counts as activity and keeps its login alive. The
+session cookie has no expiry, but a browser that restores tabs may keep it.
+Upgrades set the value again, including after a PHP package update that
+replaced `php.ini`.
+
 ## Carrier credentials and encryption
 
 Carrier credentials are encrypted in our own store (libsodium). FreeSWITCH
