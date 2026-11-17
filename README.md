@@ -288,9 +288,19 @@ the library page for 90 days. The files are under
 
 ## Theme
 
-The installer makes FusionPBX's built-in dark theme (Cobalt Blue) the default,
-once: **Advanced > Default Settings > Domain > theme**. A theme you choose there
-later is kept, and domains and users can still pick their own.
+The installer adds two flat themes, **Light** and **Dark** (neutral surfaces,
+one blue accent, no gradients) to **Themes** (Home > Global Profile > Themes, or
+`/core/themes/themes.php`), and makes **Dark**
+the default, once: **Advanced > Default Settings > Domain > theme**. A theme you
+choose there later is kept, and domains and users can still pick their own.
+Upgrading from a version that made Cobalt Blue the default switches to Dark,
+unless the default was changed since (a default set back to Cobalt Blue by hand
+can't be told apart and switches too). Browsers may keep showing the old theme
+for up to an hour after the upgrade; a hard reload (Ctrl+Shift+R) shows the new
+one. Your edits to the two themes are kept on
+upgrade; a setting or theme you delete comes back, so disable it instead. FusionPBX's
+own themes (Cobalt Blue, Blue Gradient) stay available. Details:
+[docs/design/themes.md](docs/design/themes.md).
 
 ## Time sync
 

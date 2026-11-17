@@ -32,8 +32,41 @@ db "delete from v_devices where device_uuid = '$test_device'" >/dev/null
 #phone codec order for the provisioning templates
 check "codec order seeded" test "$(db "select string_agg(default_setting_value, ',' order by default_setting_subcategory) from v_default_settings where default_setting_category = 'provision' and default_setting_subcategory like 'x\_codec\__' and default_setting_enabled")" = "G.722,PCMU,PCMA,G.723.1,G.729A/B,G.726-32,iLBC,OPUS"
 
-#dark theme is the default (core/themes: Cobalt Blue)
-check "dark theme is the default" test "$(db "select default_setting_value from v_default_settings where default_setting_uuid='b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' and default_setting_enabled")" = "eda762b3-e356-4225-a394-38b5f092fd44"
+#the Light and Dark themes (x_local_defaults/resources/themes.php), Dark is the default
+themes_php=/usr/src/x-install/apps/x_local_defaults/resources/themes.php
+for theme in 56c90fe5-8216-47e9-a846-1c72c5f19528:Dark e0409c11-bdba-47e0-b12a-59c575b7a980:Light; do
+	uuid=${theme%%:*} theme_name=${theme#*:}
+	check "$theme_name theme seeded, enabled" test "$(db "select theme_name || ',' || theme_category from v_themes where theme_uuid = '$uuid' and theme_enabled = 'true'")" = "$theme_name,$theme_name"
+	# shellcheck disable=SC2016  # PHP code, literal
+	check "$theme_name theme has every setting once" test "$(db "select count(*) || ',' || count(distinct theme_setting_uuid) from v_theme_settings where theme_uuid = '$uuid' and theme_setting_enabled = 'true'")" = "$(php -r '$t = require $argv[1]; $n = count($t[$argv[2]]["settings"]); echo "$n,$n";' "$themes_php" "$uuid")"
+	check "$theme_name theme has no gradients (one background color each)" test "$(db "select count(*) from v_theme_settings where theme_uuid = '$uuid' and theme_setting_name in ('background_color', 'login_background_color', 'dashboard_background_color', 'dashboard_detail_background_color') group by theme_setting_name having count(*) <> 1")" = ""
+done
+check "Dark theme is the default" test "$(db "select default_setting_value from v_default_settings where default_setting_uuid='b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' and default_setting_enabled")" = "56c90fe5-8216-47e9-a846-1c72c5f19528"
+#every color setting the pinned css.php reads is set by both themes, so a pin bump can't leak upstream colors in
+css_colors=$(grep -oE "get\('theme', *'[a-z_]*color[a-z_]*'" /var/www/fusionpbx/themes/default/css.php | sed -E "s/.*'([a-z_]+)'$/\1/" | sort -u)
+for uuid in 56c90fe5-8216-47e9-a846-1c72c5f19528 e0409c11-bdba-47e0-b12a-59c575b7a980; do
+	theme_colors=$(db "select distinct theme_setting_name from v_theme_settings where theme_uuid = '$uuid' order by 1")
+	check "theme $uuid sets every color css.php reads" test -z "$(comm -23 <(printf '%s\n' "$css_colors") <(printf '%s\n' "$theme_colors" | sort -u))"
+done
+#the stylesheet as served (login page session, so the domain's default theme) has the Dark palette and no gradient
+#between two colors. css.php always writes button gradients (top and bottom colors, the same in both themes) and
+#hard-codes the playback bar's and, prefixed only, the operator panel buttons'; those are not theme settings
+css_jar=$(mktemp)
+curl -sk -c "$css_jar" -b "$css_jar" -o /dev/null -H "Host: $test_domain" https://127.0.0.1/login.php
+css_out=$(curl -sk -b "$css_jar" -H "Host: $test_domain" https://127.0.0.1/themes/default/css.php)
+rm -f "$css_jar"
+check "served css.php uses the Dark page background" grep -q 'background: #111827;' <<<"$css_out"
+# shellcheck disable=SC2016  # PHP code, literal
+check "served css.php has no two-color gradient" test "$(php -r '
+	preg_match_all("/(?<![-\w])(?:linear|radial)-gradient\((.*)\);/", stream_get_contents(STDIN), $m);
+	$n = 0;
+	foreach ($m[1] as $g) {
+		if (strpos($g, "rgba(0,0,0,0.10) 0%, transparent 100%") !== false) continue;
+		preg_match_all("/(#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)|transparent)\s+\d+%/", $g, $s);
+		if (count(array_unique($s[1])) > 1) $n++;
+	}
+	echo $n;' <<<"$css_out")" = 0
+check "Dark theme marker present" test "$(db "select count(*) from v_default_settings where default_setting_category='x_install' and default_setting_subcategory='theme_dark_initialized'")" -ge 1
 
 #upstream's English email templates reworded (x_local_defaults); the fax subject no longer reads "Subject, Fax to: ..."
 # shellcheck disable=SC2016  # FreeSWITCH variables, literal

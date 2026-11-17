@@ -77,17 +77,63 @@ if ($domains_processed == 1) {
 			unset($sql, $parameters);
 		}
 
-	//check the theme marker
-		$sql = "select count(*) from v_default_settings ";
+	//add the Light and Dark themes (resources/themes.php), like core/themes/app_defaults.php: a theme or setting is
+	//added only while its uuid is missing, so admin edits are kept
+		$themes = require __DIR__.'/resources/themes.php';
+		$sql = "select theme_uuid from v_themes where theme_uuid in ('".implode("', '", array_keys($themes))."') ";
+		$existing_themes = array_column($database->select($sql, null, 'all') ?: [], 'theme_uuid');
+		$sql = "select theme_setting_uuid from v_theme_settings where theme_uuid in ('".implode("', '", array_keys($themes))."') ";
+		$existing_settings = array_column($database->select($sql, null, 'all') ?: [], 'theme_setting_uuid');
+		unset($sql);
+		$array = [];
+		foreach ($themes as $theme_uuid => $theme) {
+			if (!in_array($theme_uuid, $existing_themes)) {
+				$array['themes'][] = [
+					'theme_uuid' => $theme_uuid,
+					'theme_category' => $theme['category'],
+					'theme_name' => $theme['name'],
+					'theme_enabled' => 'true',
+					'theme_description' => $theme['description'],
+				];
+			}
+			foreach ($theme['settings'] as [$setting_uuid, $name, $type, $value, $order]) {
+				if (in_array($setting_uuid, $existing_settings)) {
+					continue;
+				}
+				$array['theme_settings'][] = [
+					'theme_uuid' => $theme_uuid,
+					'theme_setting_uuid' => $setting_uuid,
+					'theme_setting_name' => $name,
+					'theme_setting_type' => $type,
+					'theme_setting_value' => $value,
+					'theme_setting_order' => $order,
+					'theme_setting_enabled' => 'true',
+					'theme_setting_description' => '',
+				];
+			}
+		}
+		if (!empty($array)) {
+			$p = permissions::new();
+			$p->add('theme_add', 'temp');
+			$p->add('theme_setting_add', 'temp');
+			$database->save($array, false);
+			$p->delete('theme_add', 'temp');
+			$p->delete('theme_setting_add', 'temp');
+		}
+		unset($themes, $theme, $theme_uuid, $existing_themes, $existing_settings, $array, $p, $setting_uuid, $name, $type, $value, $order);
+
+	//check the theme markers: theme_initialized (Cobalt Blue was made the default by an earlier version of this
+	//installer) and theme_dark_initialized (the Dark theme above was)
+		$sql = "select default_setting_subcategory from v_default_settings ";
 		$sql .= "where default_setting_category = 'x_install' ";
-		$sql .= "and default_setting_subcategory = 'theme_initialized' ";
-		$theme_initialized = $database->select($sql, null, 'column');
+		$sql .= "and default_setting_subcategory in ('theme_initialized', 'theme_dark_initialized') ";
+		$theme_markers = array_column($database->select($sql, null, 'all') ?: [], 'default_setting_subcategory');
 		unset($sql);
 
-	//make upstream's dark theme (Cobalt Blue, core/themes/app_defaults.php) the default; upstream ships
-	//domain > theme > uuid empty, which is the light default. a theme an admin already chose is kept, and
-	//users and domains can still pick their own.
-		if (empty($theme_initialized)) {
+	//make the Dark theme the default, once; upstream ships domain > theme > uuid empty, which is the light default.
+	//Also on installs where an earlier version made Cobalt Blue the default, while it still is. A theme an admin
+	//chose is kept, and users and domains can still pick their own.
+		if (!in_array('theme_dark_initialized', $theme_markers)) {
 			//the row is upstream's (core/themes/app_config.php, same uuid); create it if this runs first,
 			//upstream then skips it because the uuid exists
 			$sql = "insert into v_default_settings ";
@@ -97,20 +143,28 @@ if ($domains_processed == 1) {
 			$database->execute($sql, null);
 			unset($sql);
 
+			//with the earlier marker, an empty value was cleared by an admin (we had set Cobalt Blue), so only our
+			//Cobalt Blue moves; the enabled flag is never changed, a row an admin disabled stays disabled
 			$sql = "update v_default_settings ";
-			$sql .= "set default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44', default_setting_enabled = true ";
+			$sql .= "set default_setting_value = '56c90fe5-8216-47e9-a846-1c72c5f19528' ";
 			$sql .= "where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' ";
-			$sql .= "and (default_setting_value is null or default_setting_value = '') ";
+			if (in_array('theme_initialized', $theme_markers)) {
+				$sql .= "and default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44' and default_setting_enabled = true ";
+			}
+			else {
+				$sql .= "and (default_setting_value is null or default_setting_value = '') ";
+			}
 			$database->execute($sql, null);
 			unset($sql);
 
 			$sql = "insert into v_default_settings ";
 			$sql .= "(default_setting_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled, default_setting_description) ";
-			$sql .= "values (:uuid, 'x_install', 'theme_initialized', 'boolean', 'true', false, 'Marker: the dark theme was made the default at install. Do not remove.') ";
+			$sql .= "values (:uuid, 'x_install', 'theme_dark_initialized', 'boolean', 'true', false, 'Marker: the Dark theme was made the default at install. Do not remove.') ";
 			$parameters['uuid'] = uuid();
 			$database->execute($sql, $parameters);
 			unset($sql, $parameters);
 		}
+		unset($theme_markers);
 
 	//reword upstream's English email templates (resources/email_templates.php). A template is replaced only while
 	//it still has upstream's exact subject and body (trimmed: database::save trims what upstream inserts), so an
