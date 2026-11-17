@@ -21,8 +21,11 @@ require_debian() {
 	codename=$(lsb_release -cs)
 	[ "$os" = "Debian" ] || die "Only Debian is supported (found $os)."
 	case "$codename" in
-		bookworm|trixie) ;;
-		*) die "Unsupported Debian release: $codename (need bookworm or trixie)." ;;
+		trixie) ;;
+		#bookworm was supported before; existing hosts can still upgrade, untested
+		bookworm) [ "${1:-}" = upgrade ] || die "Unsupported Debian release: $codename (need trixie)."
+			warn "Debian bookworm is no longer supported or tested. Upgrading anyway; move this host to trixie." ;;
+		*) die "Unsupported Debian release: $codename (need trixie)." ;;
 	esac
 }
 

@@ -18,7 +18,7 @@ case "${1:-}" in
 esac
 
 require_root
-require_debian
+require_debian upgrade
 
 #optional upstream apps are separate git checkouts under app/, owned by www-data; git refuses to work in
 #them as another user, and running it as root would leave root-owned files behind

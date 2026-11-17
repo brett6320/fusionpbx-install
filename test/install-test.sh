@@ -2,7 +2,7 @@
 # Run the full installer in a throwaway systemd container, then check the result.
 # FreeSWITCH builds from source, so a full run takes a while (about 10 minutes).
 #
-# Usage: test/install-test.sh [bookworm|trixie] [--keep] [--quick] [--rebuild-base]
+# Usage: test/install-test.sh [trixie] [--keep] [--quick] [--rebuild-base]
 #   --quick         start from a saved base image (upstream's installer already run, our
 #                   layer not), then apply our layer and run the same checks. The preflight
 #                   refusal stage is skipped. README "Testing" says which run a PR needs before merging.
@@ -13,11 +13,11 @@ cd "$(dirname "$0")/.."
 release=trixie keep='' quick='' rebuild_base=''
 for arg in "$@"; do
 	case "$arg" in
-		bookworm|trixie) release=$arg ;;
+		trixie) release=$arg ;;
 		--keep) keep=--keep ;;
 		--quick) quick=1 ;;
 		--rebuild-base) rebuild_base=1 ;;
-		*) echo "Usage: $0 [bookworm|trixie] [--keep] [--quick] [--rebuild-base]" >&2; exit 2 ;;
+		*) echo "Usage: $0 [trixie] [--keep] [--quick] [--rebuild-base]" >&2; exit 2 ;;
 	esac
 done
 [ -n "$rebuild_base" ] && [ -z "$quick" ] && echo "WARN  --rebuild-base has no effect without --quick"
@@ -80,9 +80,8 @@ run_opts=(--privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmp
 
 if [ -n "$quick" ]; then
 	#upstream names the domain after the host address, so the base and every quick run share a
-	#fixed address (one per release, so both can run at once) and hostname on their own network
-	net=x-fusionpbx-test net_host=x-fusionpbx-test
-	case "$release" in bookworm) net_ip=172.31.250.11 ;; *) net_ip=172.31.250.10 ;; esac
+	#fixed address and hostname on their own network
+	net=x-fusionpbx-test net_host=x-fusionpbx-test net_ip=172.31.250.10
 	docker network create --subnet 172.31.250.0/24 "$net" >/dev/null 2>&1 \
 		|| docker network inspect "$net" >/dev/null
 	run_opts+=(--network "$net" --ip "$net_ip" --hostname "$net_host")

@@ -7,13 +7,14 @@
 #
 # Both installs build FreeSWITCH from source; they run in parallel. Expect this to take a long time.
 #
-# Usage: test/restore-test.sh [bookworm|trixie] [--keep]
+# Usage: test/restore-test.sh [trixie] [--keep]
 # shellcheck disable=SC2016  # single-quoted commands expand inside the containers
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . ./config.sh
 
 release=${1:-trixie}
+[ "$release" = trixie ] || { echo "Usage: $0 [trixie] [--keep]" >&2; exit 2; }
 keep=${2:-}
 image=x-fusionpbx-test:$release
 a=x-fusionpbx-restore-a-$release

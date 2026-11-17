@@ -6,7 +6,9 @@ installer. It installs FusionPBX at a pinned commit, then adds our apps
 and the gap analysis against upstream, and [docs/](docs/) for conventions and
 the detailed designs.
 
-Supported: Debian 12 (bookworm) and 13 (trixie), run as root on a fresh host.
+Supported: Debian 13 (trixie), run as root on a fresh host. Hosts installed on
+Debian 12 (bookworm) earlier can still run `upgrade.sh` (with a warning), but
+bookworm is no longer tested.
 
 ## Install
 
@@ -715,9 +717,9 @@ turn the old host off, run `systemctl enable --now freeswitch`, then run
 
 ```sh
 test/lint.sh                    # shellcheck (local), cfn-lint if installed, php -l, python syntax, x-aws-sync signing self-test (Docker)
-test/install-test.sh [bookworm|trixie] [--keep]  # install, preflight refusal, upgrade (also --optional), EC2 time sync, AWS flow; default trixie
-test/install-test.sh [bookworm|trixie] --quick [--rebuild-base] [--keep]  # same checks, from a saved base image
-test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on a fresh host and in place
+test/install-test.sh [trixie] [--keep]  # install, preflight refusal, upgrade (also --optional), EC2 time sync, AWS flow; default trixie
+test/install-test.sh [trixie] --quick [--rebuild-base] [--keep]  # same checks, from a saved base image
+test/restore-test.sh [trixie] [--keep]  # backup, refusals, restore on a fresh host and in place
 ```
 
 Both install-test modes print how long each stage took, and how long upstream's
