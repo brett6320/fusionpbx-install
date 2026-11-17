@@ -716,8 +716,35 @@ turn the old host off, run `systemctl enable --now freeswitch`, then run
 ```sh
 test/lint.sh                    # shellcheck (local), cfn-lint if installed, php -l, python syntax, x-aws-sync signing self-test (Docker)
 test/install-test.sh [bookworm|trixie] [--keep]  # install, preflight refusal, upgrade (also --optional), EC2 time sync, AWS flow; default trixie
+test/install-test.sh [bookworm|trixie] --quick [--rebuild-base] [--keep]  # same checks, from a saved base image
 test/restore-test.sh [bookworm|trixie] [--keep]  # backup, refusals, restore on a fresh host and in place
 ```
+
+Both install-test modes print how long each stage took, and how long upstream's
+installer and our layer took inside the install.
+
+`--quick` starts from a base image
+(`x-fusionpbx-base:<release>-<key>`) in which upstream's installer has already
+run, applies our layer, and runs the same checks, upgrade and AWS stages. It
+skips the preflight refusal stage, which needs a fresh host. The base is built
+the first time (one full upstream install) and rebuilt when anything that runs
+before our layer changes: the release, `test/Dockerfile`, `config.sh`,
+`install.sh`, `resources/upstream.sh` or
+`resources/common.sh`. Packages in the base are not refreshed on their own:
+`--rebuild-base` forces a rebuild, e.g. to pick up newer Debian packages. The
+two newest base images per release are kept (about 6 GB each). Quick runs use their own Docker
+network (`x-fusionpbx-test`, 172.31.250.0/24), because upstream names the
+domain after the host address. Our layer is applied after a clean systemd boot
+of the base, not straight after upstream's installer as on a real host.
+
+Which install test to run before merging a PR:
+
+- Only the UI or apps change (`apps/`, menus, docs, test checks): `--quick`
+  is enough.
+- `install.sh`, `resources/upstream.sh`, `resources/common.sh`, `config.sh`,
+  the FusionPBX or FreeSWITCH pins, or the Debian release change: the full
+  run (without `--quick`). Only it tests a fresh install end to end, including
+  upstream's installer and the preflight refusal.
 
 ## Known limitations
 

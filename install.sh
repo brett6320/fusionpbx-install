@@ -65,7 +65,13 @@ log="$install_log_dir/x-install-$(date +%Y%m%d-%H%M%S).log"
 install -m 0600 -o root -g root /dev/null "$log"
 info "Logging to $log"
 
+#X_INSTALL_STOP_AFTER_UPSTREAM=1 stops after upstream's installer and the checks of what it left, before
+#our layer (resources/apply.sh install). Only test/install-test.sh --quick uses it, to save a base image.
+stop_after_upstream=${X_INSTALL_STOP_AFTER_UPSTREAM:-}
+
 {
+	#"Timing:" lines (epoch seconds) let test/install-test.sh report how long each phase took
+	info "Timing: upstream start $(date +%s)"
 	bash resources/upstream.sh
 
 	info "Running upstream installer"
@@ -96,7 +102,16 @@ info "Logging to $log"
 	done
 	fs_cli -x status >/dev/null || die "FreeSWITCH is not answering on the event socket. Fix it, then $recover"
 
-	bash resources/apply.sh install
+	info "Timing: layer start $(date +%s)"
+	if [ "$stop_after_upstream" = 1 ]; then
+		info "Stopping before our layer (X_INSTALL_STOP_AFTER_UPSTREAM=1). Finish with: bash resources/apply.sh install"
+	else
+		bash resources/apply.sh install
+	fi
+	info "Timing: done $(date +%s)"
 } 2>&1 | tee -a "$log"
 
+if [ "$stop_after_upstream" = 1 ]; then
+	exit 0
+fi
 info "Done. Reboot to finish, as upstream recommends. Credentials are in $log."
