@@ -1,57 +1,171 @@
 #!/bin/bash
 # Run the full installer in a throwaway systemd container, then check the result.
-# FreeSWITCH builds from source, so expect this to take a long time.
+# FreeSWITCH builds from source, so a full run takes a while (about 10 minutes).
 #
-# Usage: test/install-test.sh [bookworm|trixie] [--keep]
+# Usage: test/install-test.sh [bookworm|trixie] [--keep] [--quick] [--rebuild-base]
+#   --quick         start from a saved base image (upstream's installer already run, our
+#                   layer not), then apply our layer and run the same checks. The preflight
+#                   refusal stage is skipped. For iterating; run the full test before merging.
+#   --rebuild-base  with --quick, rebuild the base image even if one matches.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-release=${1:-trixie}
-keep=${2:-}
+release=trixie keep='' quick='' rebuild_base=''
+for arg in "$@"; do
+	case "$arg" in
+		bookworm|trixie) release=$arg ;;
+		--keep) keep=--keep ;;
+		--quick) quick=1 ;;
+		--rebuild-base) rebuild_base=1 ;;
+		*) echo "Usage: $0 [bookworm|trixie] [--keep] [--quick] [--rebuild-base]" >&2; exit 2 ;;
+	esac
+done
 name=x-fusionpbx-test-$release
 image=x-fusionpbx-test:$release
 
+#stage timings: each stage prints the previous one's duration; the table is printed on exit, pass or fail
+stages=() stage_name='' stage_start=''
+run_start=$(date +%s)
+stage_end() {
+	[ -n "$stage_name" ] || return 0
+	stages+=("$(printf '%6ss  %s' "$(($(date +%s) - stage_start))" "$stage_name")")
+	stage_name=
+}
+stage() {
+	stage_end
+	stage_name=$1 stage_start=$(date +%s)
+	echo "== $1"
+}
+timings() {
+	stage_end
+	echo "== timings"
+	printf '%s\n' "${stages[@]}"
+	#phases inside install.sh, from its "Timing:" lines
+	if [ -n "${install_log:-}" ]; then
+		docker exec "$name" bash -c "cat $install_log" 2>/dev/null | sed -n 's/.*Timing: \(.*\) \([0-9]*\)$/\1 \2/p' | awk '
+			NR > 1 && p != "done" { printf "%6ss    install: %s\n", $NF - t, p }
+			{ t = $NF; $NF = ""; sub(/ (start )?$/, ""); p = $0 }'
+	fi
+	printf '%6ss  total\n' "$(($(date +%s) - run_start))"
+}
+
 cleanup() {
-	[ "$keep" = "--keep" ] && { echo "Container $name kept."; return; }
-	docker rm -f "$name" >/dev/null 2>&1 || true
+	local rc=$?
+	timings || true
+	if [ "$keep" = "--keep" ]; then echo "Container $name kept."; else docker rm -f "$name" >/dev/null 2>&1 || true; fi
+	[ -n "${base_builder:-}" ] && docker rm -f "$base_builder" >/dev/null 2>&1
+	return $rc
 }
 trap cleanup EXIT
 
+#copy the working tree in (not a mount, so the installer can't touch the host)
+copy_tree() {
+	docker exec "$1" bash -c 'rm -rf /usr/src/x-install && mkdir -p /usr/src/x-install'
+	COPYFILE_DISABLE=1 tar --no-xattrs --exclude=.git -cf - . | docker exec -i "$1" tar -xf - -C /usr/src/x-install
+}
+latest_log() {
+	docker exec "$1" bash -c 'ls -t /root/x-install-*.log | head -n 1'
+}
+
+stage "image"
 docker build --build-arg DEBIAN_RELEASE="$release" -t "$image" test/
 docker rm -f "$name" >/dev/null 2>&1 || true
-docker run -d --name "$name" --privileged --cgroupns=host \
-	-v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock \
-	"$image"
+run_opts=(--privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmpfs /run --tmpfs /run/lock)
 
-#copy the working tree in (not a mount, so the installer can't touch the host)
-docker exec "$name" mkdir -p /usr/src/x-install
-COPYFILE_DISABLE=1 tar --no-xattrs --exclude=.git -cf - . | docker exec -i "$name" tar -xf - -C /usr/src/x-install
+if [ -n "$quick" ]; then
+	#upstream names the domain after the host address, so the base and every quick run share a
+	#fixed address and hostname on their own network
+	net=x-fusionpbx-test net_ip=172.31.250.10
+	docker network inspect "$net" >/dev/null 2>&1 \
+		|| docker network create --subnet 172.31.250.0/24 "$net" >/dev/null
+	run_opts+=(--network "$net" --ip "$net_ip" --hostname x-fusionpbx-test)
 
-echo "== preflight refuses when outbound port 80 is blocked, without changing the host"
-if docker exec "$name" iptables -I OUTPUT -p tcp --dport 80 -j REJECT 2>/dev/null; then
-	if out=$(timeout 600 docker exec "$name" bash /usr/src/x-install/install.sh 2>&1); then
-		echo "FAIL  install.sh ran with port 80 blocked"; exit 1
+	#the base depends on everything that runs before our layer: the release and test/Dockerfile, config.sh's
+	#upstream values and pins, install.sh, upstream.sh and common.sh. not the test image's id: other
+	#checkouts rebuild that tag; newer Debian packages are picked up with --rebuild-base
+	key=$( {
+		echo "$release"
+		cat test/Dockerfile
+		echo "$net_ip"
+		# shellcheck source=../config.sh
+		(. ./config.sh; for v in fusionpbx_repo fusionpbx_branch fusionpbx_commit fusionpbx_installer_repo fusionpbx_installer_commit \
+			fusionpbx_installer_dir domain_name system_username system_password switch_version php_version database_version \
+			application_speech application_sip_trunks install_log_dir; do echo "$v=${!v}"; done)
+		cat install.sh resources/upstream.sh resources/common.sh
+	} | shasum -a 256 | cut -c1-12)
+	base=x-fusionpbx-base:$release-$key
+
+	stage "base image"
+	if [ -n "$rebuild_base" ] || ! docker image inspect "$base" >/dev/null 2>&1; then
+		echo "Building $base (runs upstream's installer, several minutes)"
+		base_builder=x-fusionpbx-base-build-$release
+		docker rm -f "$base_builder" >/dev/null 2>&1 || true
+		docker run -d --name "$base_builder" "${run_opts[@]}" "$image" >/dev/null
+		copy_tree "$base_builder"
+		docker exec -e X_INSTALL_STOP_AFTER_UPSTREAM=1 "$base_builder" bash /usr/src/x-install/install.sh
+		#stop systemd cleanly so PostgreSQL is committed shut down, not mid-write
+		docker stop -t 120 "$base_builder" >/dev/null
+		docker commit -c 'CMD ["/sbin/init"]' "$base_builder" "$base" >/dev/null
+		docker rm -f "$base_builder" >/dev/null
+		base_builder=
+	else
+		echo "Reusing $base"
 	fi
-	docker exec "$name" iptables -D OUTPUT -p tcp --dport 80 -j REJECT
-	grep -q "Cannot reach the URLs above" <<<"$out" || { printf '%s\n' "$out" | tail -n 5; echo "FAIL  preflight message"; exit 1; }
-	docker exec "$name" bash -c 'test ! -e /var/www/fusionpbx && test ! -e /etc/fusionpbx && test ! -e /usr/src/fusionpbx-install.sh && ! compgen -G "/root/x-install-*.log" >/dev/null' \
-		|| { echo "FAIL  preflight changed the host"; exit 1; }
-	echo "PASS  preflight refused before changing the host"
+	#keep the two newest base images for this release
+	docker images x-fusionpbx-base --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' | grep -F ":$release-" | sort -r \
+		| cut -f2 | tail -n +3 | grep -vxF "$base" | xargs -r docker rmi >/dev/null 2>&1 || true
+
+	docker run -d --name "$name" "${run_opts[@]}" "$base"
+	copy_tree "$name"
+
+	echo "== preflight refusal: SKIPPED (quick mode: the base is not a pristine host; the full run tests it)"
+
+	stage "install (our layer, from the base image)"
+	#systemd boots the services upstream enabled; wait for them before applying our layer
+	for _ in $(seq 60); do
+		docker exec "$name" bash -c '. /usr/src/x-install/config.sh
+			for u in postgresql freeswitch nginx "php${php_version}-fpm"; do systemctl is-active -q "$u" || exit 1; done
+			fs_cli -x status' >/dev/null 2>&1 && break
+		sleep 2
+	done
+	docker exec "$name" bash -c '. /usr/src/x-install/config.sh
+		for u in postgresql freeswitch nginx "php${php_version}-fpm"; do systemctl is-active -q "$u" || { echo "FAIL  $u not active in the base"; exit 1; }; done
+		fs_cli -x status >/dev/null || { echo "FAIL  FreeSWITCH not answering in the base"; exit 1; }'
+	#the rest of install.sh: our layer, logged privately like install.sh does
+	install_log=/root/x-install-layer-$(date +%Y%m%d-%H%M%S).log
+	docker exec "$name" bash -c "set -o pipefail; install -m 0600 /dev/null $install_log && cd /usr/src/x-install && . resources/common.sh \
+		&& { info \"Timing: layer start \$(date +%s)\"; bash resources/apply.sh install; info \"Timing: done \$(date +%s)\"; } 2>&1 | tee -a $install_log"
 else
-	echo "WARN  cannot add an iptables rule in this container; preflight refusal not tested"
+	docker run -d --name "$name" "${run_opts[@]}" "$image"
+	copy_tree "$name"
+
+	stage "preflight refuses when outbound port 80 is blocked, without changing the host"
+	if docker exec "$name" iptables -I OUTPUT -p tcp --dport 80 -j REJECT 2>/dev/null; then
+		if out=$(timeout 600 docker exec "$name" bash /usr/src/x-install/install.sh 2>&1); then
+			echo "FAIL  install.sh ran with port 80 blocked"; exit 1
+		fi
+		docker exec "$name" iptables -D OUTPUT -p tcp --dport 80 -j REJECT
+		grep -q "Cannot reach the URLs above" <<<"$out" || { printf '%s\n' "$out" | tail -n 5; echo "FAIL  preflight message"; exit 1; }
+		docker exec "$name" bash -c 'test ! -e /var/www/fusionpbx && test ! -e /etc/fusionpbx && test ! -e /usr/src/fusionpbx-install.sh && ! compgen -G "/root/x-install-*.log" >/dev/null' \
+			|| { echo "FAIL  preflight changed the host"; exit 1; }
+		echo "PASS  preflight refused before changing the host"
+	else
+		echo "WARN  cannot add an iptables rule in this container; preflight refusal not tested"
+	fi
+
+	stage "install"
+	docker exec "$name" bash /usr/src/x-install/install.sh
+	install_log=$(latest_log "$name")
 fi
 
-echo "== install"
-docker exec "$name" bash /usr/src/x-install/install.sh
-
-echo "== checks"
+stage "checks"
 docker exec -i "$name" bash -s < test/checks.sh
 
-echo "== upgrade (idempotency)"
+stage "upgrade (idempotency)"
 docker exec "$name" bash /usr/src/x-install/upgrade.sh
 docker exec -i "$name" bash -s < test/checks.sh
 
-echo "== optional apps update as www-data"
+stage "optional apps update as www-data"
 #upgrade.sh --optional fails on any pull error; also confirm www-data can still pull each checkout itself
 docker exec "$name" bash /usr/src/x-install/upgrade.sh --optional
 for repo in $(docker exec "$name" bash -c 'for g in /var/www/fusionpbx/app/*/.git; do [ -d "$g" ] && dirname "$g"; done'); do
@@ -62,7 +176,7 @@ done
 echo "PASS  optional apps update as www-data"
 docker exec -i "$name" bash -s < test/checks.sh
 
-echo "== theme: Cobalt Blue set by an earlier version moves to Dark; an admin's choice and edits are kept"
+stage "theme: Cobalt Blue set by an earlier version moves to Dark; an admin's choice and edits are kept"
 theme_db() {
 	docker exec "$name" bash -c "cd / && runuser -u postgres -- psql -d fusionpbx -qtAX -c \"$1\""
 }
@@ -103,7 +217,7 @@ docker exec "$name" bash -c 'systemctl restart "php$(php -r "echo PHP_MAJOR_VERS
 echo "PASS  theme default moved once, admin choices and edits kept"
 docker exec -i "$name" bash -s < test/checks.sh
 
-echo "== Amazon Time Sync Service on EC2 only"
+stage "Amazon Time Sync Service on EC2 only"
 docker exec -e X_IS_EC2=1 "$name" bash /usr/src/x-install/resources/timesync.sh >/dev/null
 docker exec "$name" grep -qx 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4' /etc/chrony/sources.d/x-aws-time.sources || { echo "FAIL  Amazon time source not written on EC2"; exit 1; }
 grep -q 169.254.169.123 <<<"$(docker exec "$name" chronyc -n sources)" || { echo "FAIL  chrony did not load the Amazon time source"; exit 1; }
@@ -117,7 +231,7 @@ docker exec "$name" bash /usr/src/x-install/resources/timesync.sh >/dev/null
 docker exec "$name" test ! -e /etc/chrony/sources.d/x-aws-time.sources || { echo "FAIL  Amazon time source kept off EC2"; exit 1; }
 echo "PASS  Amazon Time Sync Service on EC2 only"
 
-echo "== AWS: prefix list feeds and the Elastic IP as external address"
+stage "AWS: prefix list feeds and the Elastic IP as external address"
 docker exec "$name" bash -c 'cat > /etc/default/fusionpbx-aws <<CONF
 AWS_REGION=us-east-1
 AWS_STACK_NAME=pbx-test
