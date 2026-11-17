@@ -22,7 +22,7 @@
 ## Upstream Baseline (reviewed 2026-11-11)
 Sources: `fusionpbx/fusionpbx` (master, latest tag 5.6.5) and `fusionpbx/fusionpbx-install.sh` (`debian/`).
 
-Current upstream installer defaults: FusionPBX 5.6, FreeSWITCH 1.11 (stable, source build), sofia-sip 1.13.18, PostgreSQL 18 (official repo), PHP 8.4, nginx, Debian bookworm/trixie. Optional apps are cloned as separate repos into `/var/www/fusionpbx/app/` (speech, transcribe, language_model, device_logs, dialplan_tools, edit, sip_trunks) - this is the upstream-sanctioned extension pattern and should be used for our custom apps.
+Current upstream installer defaults: FusionPBX 5.6, FreeSWITCH 1.11 (stable, source build), sofia-sip 1.13.18, PostgreSQL 18 (official repo), PHP 8.4, nginx, Debian trixie. Optional apps are cloned as separate repos into `/var/www/fusionpbx/app/` (speech, transcribe, language_model, device_logs, dialplan_tools, edit, sip_trunks) - this is the upstream-sanctioned extension pattern and should be used for our custom apps.
 
 ## Gap Analysis
 

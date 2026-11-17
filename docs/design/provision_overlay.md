@@ -422,7 +422,7 @@ Debian package) and reports it instead.
 
 ## 9. Installer contract
 
-Packages (Debian trixie/bookworm, already present from upstream installer
+Packages (Debian trixie, already present from upstream installer
 unless noted): `php8.4-fpm`, `php8.4-cli`, `php8.4-gd` (`getimagesize` on
 all accepted types; upstream installs it, `php.sh:139`), `php8.4-apcu` if
 upstream installs it (for cache behaviour parity), `file` (libmagic for
