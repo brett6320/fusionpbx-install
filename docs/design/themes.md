@@ -34,7 +34,7 @@ Status: built, 2026-11-16. Upstream refs are to the commit pinned in
 ## 3. What is built
 
 - `apps/x_local_defaults/resources/themes.php`: both themes, every setting with a
-  fixed uuid. Each theme sets **253 settings** (260 rows: the CPU, disk and
+  fixed uuid. Each theme sets **253 settings** (259 rows: the CPU, disk and
   network chart colors and the domain list rows are arrays of several values): the
   union of Cobalt Blue's and Blue Gradient's setting names, and also every other color, shadow or
   background setting `css.php`, `template.php` and the apps read
@@ -54,10 +54,21 @@ Status: built, 2026-11-16. Upstream refs are to the commit pinned in
      (disable it instead).
   2. Once, recorded with the marker `x_install > theme_dark_initialized`:
      creates upstream's `domain > theme > uuid` row if missing, then sets it
-     to Dark if it is empty, or if it is Cobalt Blue, enabled, and the
-     earlier marker `x_install > theme_initialized` shows this installer set
-     it. Any other value (Blue Gradient, a custom theme, Cobalt Blue chosen by
-     an admin on an install without the earlier marker) is kept.
+     to Dark:
+     - without the earlier marker `x_install > theme_initialized` (a new
+       install): if it is empty;
+     - with it (an install where an earlier version set Cobalt Blue): only if
+       it is still Cobalt Blue and enabled. An empty value there was cleared
+       by an admin and is kept.
+
+     Any other value (Blue Gradient, a custom theme, Cobalt Blue chosen by an
+     admin on an install without the earlier marker) is kept, and the enabled
+     flag is never changed. A value an admin set back to Cobalt Blue by hand
+     on an install with the earlier marker can't be told apart from ours and
+     moves to Dark.
+  3. Browsers may show the old theme for up to an hour after an upgrade:
+     `css.php` is sent with `Expires` one hour ahead. A reload with the cache
+     bypassed (Ctrl+Shift+R) shows the new one.
 
 uuids: Dark `56c90fe5-8216-47e9-a846-1c72c5f19528`, Light
 `e0409c11-bdba-47e0-b12a-59c575b7a980`.
@@ -100,4 +111,9 @@ chart segments) are not text and carry meaning by icon or label as well.
 
 - Blue Gradient and Cobalt Blue are unchanged and still selectable.
 - Third-party apps that hard-code colors outside theme settings.
+- `css.php` hard-codes a few gradients that no theme setting controls: the
+  audio playback bar and the operator panel status buttons. Buttons are
+  written as a gradient from `button_background_color` to
+  `button_background_color_bottom`; both themes set the two to the same
+  color, so they render flat.
 - Fonts, menu style and other non-color theme settings keep their defaults.

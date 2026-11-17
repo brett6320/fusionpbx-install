@@ -143,14 +143,17 @@ if ($domains_processed == 1) {
 			$database->execute($sql, null);
 			unset($sql);
 
+			//with the earlier marker, an empty value was cleared by an admin (we had set Cobalt Blue), so only our
+			//Cobalt Blue moves; the enabled flag is never changed, a row an admin disabled stays disabled
 			$sql = "update v_default_settings ";
-			$sql .= "set default_setting_value = '56c90fe5-8216-47e9-a846-1c72c5f19528', default_setting_enabled = true ";
+			$sql .= "set default_setting_value = '56c90fe5-8216-47e9-a846-1c72c5f19528' ";
 			$sql .= "where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a' ";
-			$sql .= "and (default_setting_value is null or default_setting_value = '' ";
 			if (in_array('theme_initialized', $theme_markers)) {
-				$sql .= "or (default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44' and default_setting_enabled = true) ";
+				$sql .= "and default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44' and default_setting_enabled = true ";
 			}
-			$sql .= ") ";
+			else {
+				$sql .= "and (default_setting_value is null or default_setting_value = '') ";
+			}
 			$database->execute($sql, null);
 			unset($sql);
 

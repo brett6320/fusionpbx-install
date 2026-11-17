@@ -84,13 +84,21 @@ theme_defaults
 theme_db "delete from v_default_settings where default_setting_category = 'x_install' and default_setting_subcategory in ('theme_initialized', 'theme_dark_initialized'); update v_default_settings set default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44' where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
 theme_defaults
 [ "$(theme_value)" = eda762b3-e356-4225-a394-38b5f092fd44 ] || { echo "FAIL  admin's Cobalt Blue overwritten ($(theme_value))"; exit 1; }
-#an admin's edit of a Dark setting is kept, and with the marker set nothing changes the default
+#an admin's edit of a Dark setting is kept
 theme_db "update v_theme_settings set theme_setting_value = '#123456' where theme_uuid = '56c90fe5-8216-47e9-a846-1c72c5f19528' and theme_setting_name = 'body_color'" >/dev/null
 theme_defaults
 [ "$(theme_db "select string_agg(theme_setting_value, ',') from v_theme_settings where theme_uuid = '56c90fe5-8216-47e9-a846-1c72c5f19528' and theme_setting_name = 'body_color'")" = '#123456' ] || { echo "FAIL  admin's theme setting overwritten or duplicated"; exit 1; }
-[ "$(theme_value)" = eda762b3-e356-4225-a394-38b5f092fd44 ] || { echo "FAIL  default changed again with the marker set ($(theme_value))"; exit 1; }
+#with the Dark marker set it runs no more: an empty value stays empty
+theme_db "update v_default_settings set default_setting_value = '' where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
+theme_defaults
+[ "$(theme_value)" = "" ] || { echo "FAIL  default changed again with the Dark marker set ($(theme_value))"; exit 1; }
+#an earlier install where an admin cleared and disabled our Cobalt Blue default keeps it empty and disabled
+theme_db "delete from v_default_settings where default_setting_category = 'x_install' and default_setting_subcategory = 'theme_dark_initialized'; insert into v_default_settings (default_setting_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled) values (gen_random_uuid(), 'x_install', 'theme_initialized', 'boolean', 'true', false); update v_default_settings set default_setting_value = '', default_setting_enabled = false where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
+theme_defaults
+theme_row=$(theme_db "select coalesce(default_setting_value, 'null') || ',' || case when default_setting_enabled then 'enabled' else 'disabled' end from v_default_settings where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'")
+[ "$theme_row" = ",disabled" ] || { echo "FAIL  admin's cleared, disabled default changed ($theme_row)"; exit 1; }
 #back to the installed state for what follows
-theme_db "update v_theme_settings set theme_setting_value = '#1f2937' where theme_uuid = '56c90fe5-8216-47e9-a846-1c72c5f19528' and theme_setting_name = 'body_color'; update v_default_settings set default_setting_value = '56c90fe5-8216-47e9-a846-1c72c5f19528' where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
+theme_db "update v_theme_settings set theme_setting_value = '#1f2937' where theme_uuid = '56c90fe5-8216-47e9-a846-1c72c5f19528' and theme_setting_name = 'body_color'; update v_default_settings set default_setting_value = '56c90fe5-8216-47e9-a846-1c72c5f19528', default_setting_enabled = true where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
 docker exec "$name" bash -c 'systemctl restart "php$(php -r "echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;")-fpm"'
 echo "PASS  theme default moved once, admin choices and edits kept"
 docker exec -i "$name" bash -s < test/checks.sh
