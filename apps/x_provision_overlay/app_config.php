@@ -48,11 +48,9 @@
 		$apps[$x]['permissions'][$y]['name'] = "x_provision_overlay_branding_view";
 		$apps[$x]['permissions'][$y]['menu']['uuid'] = "48ea9ec4-cd5c-4710-b21a-776d05fec969";
 		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";
-		$apps[$x]['permissions'][$y]['groups'][] = "admin";
 		$y++;
 		$apps[$x]['permissions'][$y]['name'] = "x_provision_overlay_branding_edit";
 		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";
-		$apps[$x]['permissions'][$y]['groups'][] = "admin";
 		$y++;
 		$apps[$x]['permissions'][$y]['name'] = "x_provision_overlay_branding_global";
 		$apps[$x]['permissions'][$y]['groups'][] = "superadmin";

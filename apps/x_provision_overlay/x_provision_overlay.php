@@ -69,9 +69,6 @@
 	echo "<div class='action_bar' id='action_bar'>\n";
 	echo "	<div class='heading'><b>".$text['header-x_provision_overlay']."</b></div>\n";
 	echo "	<div class='actions'>\n";
-	if (permission_exists('x_provision_overlay_branding_view')) {
-		echo button::create(['type'=>'button','label'=>$text['button-branding'],'icon'=>'paint-brush','link'=>'x_provision_overlay_branding.php']);
-	}
 	echo button::create(['type'=>'button','label'=>$text['button-wallpapers'],'icon'=>'image','link'=>'x_provision_overlay_wallpapers.php']);
 	if (permission_exists('x_provision_overlay_firmware_view')) {
 		echo button::create(['type'=>'button','label'=>$text['button-firmware'],'icon'=>'microchip','link'=>'x_provision_overlay_firmware.php']);

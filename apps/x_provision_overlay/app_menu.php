@@ -18,7 +18,6 @@
 	$apps[$x]['menu'][$y]['icon'] = "";
 	$apps[$x]['menu'][$y]['path'] = "/app/x_provision_overlay/x_provision_overlay_branding.php";
 	$apps[$x]['menu'][$y]['order'] = "";
-	$apps[$x]['menu'][$y]['groups'][] = "admin";
 	$apps[$x]['menu'][$y]['groups'][] = "superadmin";
 	$y++;
 
