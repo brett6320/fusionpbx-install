@@ -225,19 +225,17 @@ dir (realpath-checked); content type from the sniffed type recorded at upload
 provision HTTP auth: phones do not reliably send credentials for secondary
 downloads, and the files are non-sensitive branding.
 
-Templates reference assets through settings, not paths. Phone wallpapers
-are handled by the Wallpapers page ([provision_wallpapers.md](provision_wallpapers.md)):
-one image per screen size, linked to each phone with device settings. The
-branding page's "apply to vendor settings", which writes a domain setting
-such as `provision.<setting> = http://{$domain_name}/provision-assets/<file>`
-(substituted at `provision.php:1563-1568`), no longer offers the wallpaper
-settings (`polycom_background_url`, `grandstream_wallpaper_url`,
-`poly_obi_logo_*`, `yealink_*_wallpaper`), so it currently offers none;
-domain settings it wrote earlier stay and take precedence over the managed
-wallpaper until removed. For images without an upstream setting (e.g. a
-Yealink logo), the page offers a canned per-template override snippet that
-the admin saves as a domain override. Names starting with `wp-` are reserved
-for wallpapers.
+Phone wallpapers are handled by the Wallpapers page
+([provision_wallpapers.md](provision_wallpapers.md)): one image per screen
+size, linked to each phone with device settings; their files (`wp-*`) live in
+the same asset dirs and are served by `assets.php`.
+
+The phone branding page that uploaded other images here and wrote them into
+vendor settings ("apply to vendor settings", template snippet) was removed and
+replaced by web interface branding ([branding.md](branding.md)). Images it
+stored are still served by `assets.php`, read only; nothing new is uploaded to
+`assets/` except wallpapers. Domain settings it wrote stay until an admin
+changes them (branding.md section 6).
 
 ### 3.5 First-install enabling of provisioning
 
@@ -303,8 +301,8 @@ Pages
 - `x_provision_overlay_edit.php` - edit one file for one scope: text editor
   with upstream/global source shown read-only, diff view, Save (writes
   overlay file, runs build), Reset to upstream (deletes override, runs build).
-- `x_provision_overlay_assets.php` - upload/list/delete branding files for the
-  current domain; shows the resulting URL; "apply to vendor settings".
+- `x_provision_overlay_branding.php` - web interface branding (logos, favicon,
+  title, menu text) for the domain and the system; see [branding.md](branding.md).
 - `x_provision_overlay_build.php` - status, Rebuild now, Rollback to previous
   build (superadmin).
 
@@ -315,28 +313,21 @@ Permissions (`app_config.php`; `superadmin` only unless noted)
 | `x_provision_overlay_view` | list and status pages | admin, superadmin |
 | `x_provision_overlay_domain_edit` | create/edit/delete overrides for own domain | superadmin |
 | `x_provision_overlay_global_edit` | global scope overrides | superadmin |
-| `x_provision_overlay_asset_edit` | upload/delete assets for own domain, apply settings | admin, superadmin |
+| `x_provision_overlay_asset_edit` | domain wallpapers (Wallpapers page) | admin, superadmin |
+| `x_provision_overlay_branding_view`, `_branding_edit`, `_branding_global` | Branding page, domain and system branding ([branding.md](branding.md)) | admin, superadmin; `_global` superadmin |
 | `x_provision_overlay_build` | rebuild / rollback | superadmin |
 
 Template editing is code execution: Smarty runs without a security policy
 (`template.php:45-51`), so a template author can call arbitrary PHP
 functions as modifiers as www-data. Therefore `*_domain_edit` is NOT
 granted to `admin` by default even though it is domain-scoped; the
-installer documents how to grant it per deployment. Asset upload is safe to
-give to domain admins.
+installer documents how to grant it per deployment. Wallpaper and branding
+upload is safe to give to domain admins.
 
-Upload validation (assets)
-
-- Sniff with `finfo` and `getimagesize`; accept only `image/png`,
-  `image/jpeg`, `image/bmp`, `image/gif`. Reject SVG and anything whose
-  sniffed type is not in the list, regardless of extension; the stored
-  extension is derived from the sniffed type.
-- Size cap: default setting `x_provision_overlay.asset_max_bytes` (default
-  2097152); dimension cap 4096x4096; max 50 files per domain.
-- Filename: lower-cased, `^[a-z0-9][a-z0-9._-]{0,63}$`, no path separators,
-  no double extension tricks (`a.php.png` is renamed to `a_php.png`).
-- Written with `move_uploaded_file` to a temp file, validated, then renamed
-  into place; mode 0640.
+Upload validation (assets): the generic asset upload was removed with the
+phone branding page. Wallpapers are validated and re-encoded as described in
+[provision_wallpapers.md](provision_wallpapers.md) section 4, web interface
+branding images as in [branding.md](branding.md) section 4.
 
 Validation (template overrides)
 
@@ -444,13 +435,13 @@ re-asserts ownership/modes but never rewrites overlay content or settings)
 |---|---|---|---|
 | `/var/www/fusionpbx/app/x_provision_overlay/` | www-data:www-data | 0750 dirs / 0640 files | Copied from this repo (`apps/x_provision_overlay/`), not a git clone, so `--optional` ignores it. Re-copied on every `upgrade.sh`. |
 | `/var/lib/fusionpbx/provision_overlay/` | www-data:www-data | 0750 | state root |
-| `.../global/`, `.../domains/`, `.../assets/`, `.../merged/` | www-data:www-data | 0750 | created empty |
+| `.../global/`, `.../domains/`, `.../assets/`, `.../merged/`, `.../firmware/`, `.../branding/` | www-data:www-data | 0750 | created empty |
 | `.../.lock` | www-data:www-data | 0640 | flock |
 | `/usr/share/fusionpbx/templates/` | www-data:www-data | 0755 | parent of the link |
 | `/usr/share/fusionpbx/templates/provision` | symlink | - | `-> /var/lib/fusionpbx/provision_overlay/merged/current` |
 | `/etc/systemd/system/x-provision-overlay.service` | root:root | 0644 | `Type=oneshot`, `User=www-data`, `ExecStart=/usr/bin/php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/build.php --build` |
 | `/etc/systemd/system/x-provision-overlay.timer` | root:root | 0644 | `OnCalendar=daily`, `RandomizedDelaySec=1h`, `Persistent=true` |
-| `/etc/nginx/sites-available/fusionpbx` | root:root | 0644 | marker-delimited `location ^~ /provision-assets/` block inserted into both the `:80` and `:443` server blocks, fastcgi to the php-fpm socket the vhost already uses (default `/var/run/php/php8.4-fpm.sock`) with `SCRIPT_FILENAME /var/www/fusionpbx/app/x_provision_overlay/assets.php`, `SCRIPT_NAME /app/x_provision_overlay/assets.php`; in the plain-http :80 block also a `location ^~ /app/x_provision_overlay/` 301 redirect to https; `nginx -t` before reload |
+| `/etc/nginx/sites-available/fusionpbx` | root:root | 0644 | marker-delimited `location ^~ /provision-assets/` block inserted into both the `:80` and `:443` server blocks, fastcgi to the php-fpm socket the vhost already uses (default `/var/run/php/php8.4-fpm.sock`) with `SCRIPT_FILENAME /var/www/fusionpbx/app/x_provision_overlay/assets.php`, `SCRIPT_NAME /app/x_provision_overlay/assets.php`; in the same block `location ^~ /branding-assets/` to `branding.php` ([branding.md](branding.md) section 5) and the firmware locations; in the plain-http :80 block also a `location ^~ /app/x_provision_overlay/` 301 redirect to https; `nginx -t` before reload |
 
 Order of operations in `resources/apply.sh` (after upstream `finish.sh`
 completes; the same sequence runs for install and upgrade)

@@ -49,7 +49,6 @@ class provision_overlay {
 	//limits
 	const template_max_bytes = 1048576;
 	const asset_default_max_bytes = 2097152;
-	const asset_max_files = 50;
 	const asset_max_dimension = 4096;
 	const lock_timeout = 120;
 
@@ -60,7 +59,8 @@ class provision_overlay {
 	const build_id_pattern = '/^[0-9]{8}T[0-9]{6}-[0-9a-f]{6}$/';
 	const uuid_pattern = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/';
 
-	//accepted asset types (sniffed mime => stored extension)
+	//types of the assets the removed assets page stored (sniffed mime => stored extension); assets.php still
+	//serves them, read only (docs/design/branding.md 6)
 	const asset_types = [
 		'image/png' => 'png',
 		'image/jpeg' => 'jpg',
@@ -68,14 +68,7 @@ class provision_overlay {
 		'image/gif' => 'gif',
 	];
 
-	//vendor settings that take an image url and may be written per domain by "apply to vendor settings";
-	//wallpaper settings (polycom_background_url, grandstream_wallpaper_url, poly_obi_logo_*, yealink_*_wallpaper)
-	//are linked per device by the wallpapers page instead (provision_wallpapers.php)
-	const vendor_setting_patterns = [];
-
-	//new uploads named wp-* are stored as wp_*; names of this form are wallpapers (provision_wallpapers.php),
-	//never ordinary assets. Assets uploaded before wallpapers existed may still start with wp-.
-	const wallpaper_prefix = 'wp-';
+	//names of this form are wallpapers (provision_wallpapers.php), never assets of the old page
 	const wallpaper_file_pattern = '/^wp-([0-9]{3,4}x[0-9]{3,4})-([0-9a-f]{8})\.(jpg|png)$/';
 
 	/**
@@ -217,15 +210,6 @@ class provision_overlay {
 	public static function valid_asset_name(string $name): bool {
 		return preg_match(self::asset_name_pattern, $name) === 1 && strpos($name, '..') === false
 			&& preg_match(self::wallpaper_file_pattern, $name) !== 1;
-	}
-
-	public static function valid_vendor_setting(string $subcategory): bool {
-		foreach (self::vendor_setting_patterns as $pattern) {
-			if (preg_match($pattern, $subcategory) === 1) {
-				return true;
-			}
-		}
-		return false;
 	}
 
 	//-------------------------------------------------------------------------
@@ -1455,7 +1439,8 @@ class provision_overlay {
 	}
 
 	//-------------------------------------------------------------------------
-	// branding assets
+	// phone assets: wallpapers (provision_wallpapers.php) and files the removed assets page stored, which
+	// assets.php keeps serving read only (docs/design/branding.md 6)
 	//-------------------------------------------------------------------------
 
 	/**
@@ -1517,322 +1502,6 @@ class provision_overlay {
 	 */
 	public static function asset_url(string $name): string {
 		return 'http://{$domain_name}/provision-assets/'.$name;
-	}
-
-	/**
-	 * Builds a stored name from a requested name and the sniffed extension. Dots in the stem become
-	 * underscores, so "a.php.png" is stored as "a_php.png"; "wp-a.png" is stored as "wp_a.png".
-	 */
-	public static function asset_name(string $requested, string $extension): string {
-		$stem = strtolower(trim($requested));
-		$stem = basename(str_replace('\\', '/', $stem));
-		$dot = strrpos($stem, '.');
-		if ($dot !== false && $dot > 0) {
-			$stem = substr($stem, 0, $dot);
-		}
-		$stem = preg_replace('/[^a-z0-9_-]+/', '_', $stem);
-		$stem = ltrim($stem, '_-');
-		//the wp- prefix is reserved for wallpapers
-		if (strpos($stem, self::wallpaper_prefix) === 0) {
-			$stem = 'wp_'.substr($stem, strlen(self::wallpaper_prefix));
-		}
-		$stem = substr($stem, 0, 59);
-		if ($stem === '') {
-			$stem = 'asset';
-		}
-		return $stem.'.'.$extension;
-	}
-
-	/**
-	 * Validates, re-encodes and stores an uploaded image for a domain.
-	 *
-	 * @return array ['error' => language key|null, 'name' => stored name]
-	 */
-	public function save_asset(string $domain_uuid, array $upload, string $requested_name, int $max_bytes, string $username): array {
-		$dir = self::asset_dir($domain_uuid);
-		if ($dir === null) {
-			return ['error' => 'error-asset_store', 'name' => ''];
-		}
-		if ($max_bytes < 1) {
-			$max_bytes = self::asset_default_max_bytes;
-		}
-
-		//GD is required to re-encode
-		if (!function_exists('imagecreatefromstring') || !function_exists('getimagesize')) {
-			return ['error' => 'error-asset_no_gd', 'name' => ''];
-		}
-
-		//upload checks
-		if (!isset($upload['error']) || is_array($upload['error']) || $upload['error'] !== UPLOAD_ERR_OK) {
-			if (isset($upload['error']) && !is_array($upload['error']) && ($upload['error'] === UPLOAD_ERR_INI_SIZE || $upload['error'] === UPLOAD_ERR_FORM_SIZE)) {
-				return ['error' => 'error-asset_too_large', 'name' => ''];
-			}
-			return ['error' => 'error-asset_upload', 'name' => ''];
-		}
-		if (empty($upload['tmp_name']) || !is_uploaded_file($upload['tmp_name'])) {
-			return ['error' => 'error-asset_upload', 'name' => ''];
-		}
-		$size = filesize($upload['tmp_name']);
-		if ($size === false || $size < 1) {
-			return ['error' => 'error-asset_upload', 'name' => ''];
-		}
-		if ($size > $max_bytes) {
-			return ['error' => 'error-asset_too_large', 'name' => ''];
-		}
-
-		if (!$this->lock()) {
-			return ['error' => 'error-lock', 'name' => ''];
-		}
-		$old_umask = umask(0027);
-		$temp = '';
-		$encoded = '';
-		try {
-			try {
-				self::fs_mkdir($dir);
-			}
-			catch (RuntimeException $e) {
-				return ['error' => 'error-asset_store', 'name' => ''];
-			}
-
-			//move the upload next to its destination first, then validate it there
-			$temp = $dir.'/.upload-'.bin2hex(random_bytes(8));
-			if (!@move_uploaded_file($upload['tmp_name'], $temp)) {
-				return ['error' => 'error-asset_store', 'name' => ''];
-			}
-			@chmod($temp, 0640);
-
-			//detect the type from the content, never from the client or the extension
-			$finfo = new finfo(FILEINFO_MIME_TYPE);
-			$mime = $finfo->file($temp);
-			if ($mime === 'image/x-ms-bmp') {
-				$mime = 'image/bmp';
-			}
-			if (!is_string($mime) || !isset(self::asset_types[$mime])) {
-				return ['error' => 'error-asset_type', 'name' => ''];
-			}
-			$info = @getimagesize($temp);
-			$image_types = ['image/png' => IMAGETYPE_PNG, 'image/jpeg' => IMAGETYPE_JPEG, 'image/bmp' => IMAGETYPE_BMP, 'image/gif' => IMAGETYPE_GIF];
-			if (!is_array($info) || $info[2] !== $image_types[$mime]) {
-				return ['error' => 'error-asset_type', 'name' => ''];
-			}
-			$width = (int) $info[0];
-			$height = (int) $info[1];
-			if ($width < 1 || $height < 1 || $width > self::asset_max_dimension || $height > self::asset_max_dimension) {
-				return ['error' => 'error-asset_dimensions', 'name' => ''];
-			}
-
-			//the stored name and the file count limit
-			$extension = self::asset_types[$mime];
-			$name = self::asset_name($requested_name, $extension);
-			if (!self::valid_asset_name($name)) {
-				return ['error' => 'error-asset_name', 'name' => ''];
-			}
-			$assets = self::list_assets($domain_uuid);
-			if (!isset($assets[$name]) && count($assets) >= self::asset_max_files) {
-				return ['error' => 'error-asset_count', 'name' => ''];
-			}
-
-			//re-encode with GD in the same format (drops metadata and trailing payloads)
-			$image = false;
-			switch ($mime) {
-				case 'image/png': $image = @imagecreatefrompng($temp); break;
-				case 'image/jpeg': $image = @imagecreatefromjpeg($temp); break;
-				case 'image/gif': $image = @imagecreatefromgif($temp); break;
-				case 'image/bmp': $image = function_exists('imagecreatefrombmp') ? @imagecreatefrombmp($temp) : false; break;
-			}
-			if (!$image) {
-				return ['error' => 'error-asset_process', 'name' => ''];
-			}
-			$encoded = $dir.'/.encoded-'.bin2hex(random_bytes(8));
-			$written = false;
-			switch ($mime) {
-				case 'image/png':
-					imagesavealpha($image, true);
-					$written = imagepng($image, $encoded, 6);
-					break;
-				case 'image/jpeg':
-					$written = imagejpeg($image, $encoded, 90);
-					break;
-				case 'image/gif':
-					$written = imagegif($image, $encoded);
-					break;
-				case 'image/bmp':
-					//uncompressed: phones do not reliably decode RLE bitmaps
-					$written = function_exists('imagebmp') ? imagebmp($image, $encoded, false) : false;
-					break;
-			}
-			imagedestroy($image);
-			if (!$written || !is_file($encoded)) {
-				return ['error' => 'error-asset_process', 'name' => ''];
-			}
-			@chmod($encoded, 0640);
-			if (!@rename($encoded, $dir.'/'.$name)) {
-				return ['error' => 'error-asset_store', 'name' => ''];
-			}
-			$encoded = '';
-
-			//record the sniffed type; assets.php serves this type, never one derived from the name
-			$meta = self::read_asset_meta($dir);
-			$meta[$name] = [
-				'mime' => $mime,
-				'size' => filesize($dir.'/'.$name),
-				'width' => $width,
-				'height' => $height,
-				'sha256' => hash_file('sha256', $dir.'/'.$name),
-				'uploaded_by' => $username,
-				'uploaded_at' => gmdate('c'),
-			];
-			if (!self::fs_write_atomic($dir.'/.meta.json', (string) json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
-				return ['error' => 'error-asset_store', 'name' => ''];
-			}
-			self::log('asset_saved', 'domain', $domain_uuid, 'assets/'.$name, $meta[$name]['sha256'], $username);
-			return ['error' => null, 'name' => $name];
-		}
-		finally {
-			if ($temp !== '' && file_exists($temp)) {
-				@unlink($temp);
-			}
-			if ($encoded !== '' && file_exists($encoded)) {
-				@unlink($encoded);
-			}
-			umask($old_umask);
-			$this->unlock();
-		}
-	}
-
-	/**
-	 * Deletes an asset of a domain.
-	 *
-	 * @return string|null null on success, otherwise the language key of the error
-	 */
-	public function delete_asset(string $domain_uuid, string $name, string $username): ?string {
-		$dir = self::asset_dir($domain_uuid);
-		if ($dir === null || !self::valid_asset_name($name)) {
-			return 'error-asset_name';
-		}
-		if (!$this->lock()) {
-			return 'error-lock';
-		}
-		try {
-			$meta = self::read_asset_meta($dir);
-			$path = $dir.'/'.$name;
-			if (!isset($meta[$name]) && !is_file($path)) {
-				return 'error-not_found';
-			}
-			if ((is_file($path) || is_link($path)) && !@unlink($path)) {
-				return 'error-asset_store';
-			}
-			unset($meta[$name]);
-			if (!self::fs_write_atomic($dir.'/.meta.json', (string) json_encode($meta, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES))) {
-				return 'error-asset_store';
-			}
-			self::log('asset_deleted', 'domain', $domain_uuid, 'assets/'.$name, '', $username);
-			return null;
-		}
-		finally {
-			$this->unlock();
-		}
-	}
-
-	//-------------------------------------------------------------------------
-	// vendor settings (apply an asset url per domain)
-	//-------------------------------------------------------------------------
-
-	/**
-	 * Vendor image url settings that exist as default settings, with the domain's current value.
-	 *
-	 * @return array subcategory => ['description' => string, 'domain_value' => string|null]
-	 */
-	public function vendor_settings(string $domain_uuid): array {
-		if (!$this->has_database() || !self::valid_uuid($domain_uuid)) {
-			return [];
-		}
-		$sql = "select default_setting_subcategory, default_setting_description from v_default_settings ";
-		$sql .= "where default_setting_category = 'provision' ";
-		$sql .= "order by default_setting_subcategory asc ";
-		$rows = $this->database->select($sql, null, 'all');
-		$settings = [];
-		if (is_array($rows)) {
-			foreach ($rows as $row) {
-				if (self::valid_vendor_setting((string) $row['default_setting_subcategory'])) {
-					$settings[$row['default_setting_subcategory']] = ['description' => (string) $row['default_setting_description'], 'domain_value' => null];
-				}
-			}
-		}
-		if (empty($settings)) {
-			return [];
-		}
-		$sql = "select domain_setting_subcategory, domain_setting_value from v_domain_settings ";
-		$sql .= "where domain_uuid = :domain_uuid ";
-		$sql .= "and domain_setting_category = 'provision' ";
-		$sql .= "and domain_setting_enabled = true ";
-		$parameters['domain_uuid'] = $domain_uuid;
-		$rows = $this->database->select($sql, $parameters, 'all');
-		if (is_array($rows)) {
-			foreach ($rows as $row) {
-				if (isset($settings[$row['domain_setting_subcategory']])) {
-					$settings[$row['domain_setting_subcategory']]['domain_value'] = (string) $row['domain_setting_value'];
-				}
-			}
-		}
-		return $settings;
-	}
-
-	/**
-	 * Writes the url of an asset into a vendor image setting of the domain.
-	 *
-	 * @return string|null null on success, otherwise the language key of the error
-	 */
-	public function apply_vendor_setting(string $domain_uuid, string $subcategory, string $asset_name): ?string {
-		if (!$this->has_database() || !self::valid_uuid($domain_uuid)) {
-			return 'error-setting';
-		}
-		$available = $this->vendor_settings($domain_uuid);
-		if (!isset($available[$subcategory])) {
-			return 'error-setting_unknown';
-		}
-		if (self::asset_info($domain_uuid, $asset_name) === null) {
-			return 'error-not_found';
-		}
-
-		//existing domain setting rows for this subcategory
-		$sql = "select domain_setting_uuid from v_domain_settings ";
-		$sql .= "where domain_uuid = :domain_uuid ";
-		$sql .= "and domain_setting_category = 'provision' ";
-		$sql .= "and domain_setting_subcategory = :subcategory ";
-		$sql .= "order by domain_setting_uuid asc ";
-		$parameters['domain_uuid'] = $domain_uuid;
-		$parameters['subcategory'] = $subcategory;
-		$rows = $this->database->select($sql, $parameters, 'all');
-		unset($sql, $parameters);
-
-		if (is_array($rows) && count($rows) > 0) {
-			$array['domain_settings'][0]['domain_setting_uuid'] = $rows[0]['domain_setting_uuid'];
-			$permission = 'domain_setting_edit';
-		}
-		else {
-			$array['domain_settings'][0]['domain_setting_uuid'] = uuid();
-			$permission = 'domain_setting_add';
-		}
-		$array['domain_settings'][0]['domain_uuid'] = $domain_uuid;
-		$array['domain_settings'][0]['domain_setting_category'] = 'provision';
-		$array['domain_settings'][0]['domain_setting_subcategory'] = $subcategory;
-		$array['domain_settings'][0]['domain_setting_name'] = 'text';
-		$array['domain_settings'][0]['domain_setting_value'] = self::asset_url($asset_name);
-		$array['domain_settings'][0]['domain_setting_enabled'] = true;
-		$array['domain_settings'][0]['domain_setting_description'] = 'Provision branding asset (managed by Provision Templates)';
-
-		//save with a temporary permission, as x_fax_setup does
-		$p = permissions::new();
-		$p->add($permission, 'temp');
-		$saved = $this->database->save($array);
-		unset($array);
-		$p->delete($permission, 'temp');
-
-		//clear the settings cache, as domain_setting_edit.php does
-		settings::clear_cache();
-
-		return ($saved === false) ? 'error-setting' : null;
 	}
 
 }

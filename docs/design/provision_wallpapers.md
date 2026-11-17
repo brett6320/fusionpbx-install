@@ -1,6 +1,6 @@
 # Phone wallpapers (`x_provision_overlay` enhancement)
 
-Status: design, 2026-11-16. Extends the branding assets of
+Status: design, 2026-11-16. Extends the phone assets of
 [provision_overlay.md](provision_overlay.md) (section 3.4). Upstream refs are
 to the commit pinned in `config.sh` (`58ca4e9`).
 
@@ -118,9 +118,8 @@ device setting, the device is left alone and the page lists it as "uses its
 own wallpaper (domain setting / profile X / device)". The domain admin can
 remove that value to switch the device to the managed one.
 
-The asset page's "apply to vendor settings" (`apply_vendor_setting`) no longer
-offers wallpaper variables (`polycom_background_url`,
-`grandstream_wallpaper_url`, `poly_obi_logo_*`, `yealink_*_wallpaper`); domain
+The former asset page's "apply to vendor settings" was removed (the page was
+replaced by web interface branding, [branding.md](branding.md)); domain
 settings it wrote earlier stay and, by the rule above, win until removed.
 
 ### 3.2 Managed rows
@@ -233,7 +232,7 @@ its managed rows are removed and the page shows a warning.
 
 ## 5. UI
 
-New **Wallpapers** page in Provision Templates (link from the assets page):
+New **Wallpapers** page in Provision Templates (button on the Provision Templates list):
 
 - One card per group: size, member models (the domain's devices of those
   models marked), formats and limits, current image preview (domain or "system

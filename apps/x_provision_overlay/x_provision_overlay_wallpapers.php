@@ -167,7 +167,7 @@
 	echo "<div class='action_bar' id='action_bar'>\n";
 	echo "	<div class='heading'><b>".$text['header-x_provision_overlay_wallpapers']."</b></div>\n";
 	echo "	<div class='actions'>\n";
-	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$settings->get('theme', 'button_icon_back'),'link'=>'x_provision_overlay_assets.php']);
+	echo button::create(['type'=>'button','label'=>$text['button-back'],'icon'=>$settings->get('theme', 'button_icon_back'),'link'=>'x_provision_overlay.php']);
 	if ($can_global) {
 		echo button::create(['type'=>'button','label'=>$text['button-wallpapers_domain'],'icon'=>'image','link'=>'x_provision_overlay_wallpapers.php','style'=>($scope_global ? '' : 'font-weight: bold;')]);
 		echo button::create(['type'=>'button','label'=>$text['button-wallpapers_global'],'icon'=>'globe','link'=>'x_provision_overlay_wallpapers.php?scope=global','style'=>($scope_global ? 'font-weight: bold;' : '')]);

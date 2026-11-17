@@ -6,10 +6,11 @@
 #  - /usr/share/fusionpbx/templates (www-data) and the provision symlink into the merged tree
 #  - initial/refresh build of the merged tree as www-data (no database needed unless domain overrides exist)
 #  - nginx location ^~ /provision-assets/ in the :80 and :443 server blocks, between marker comments
+#  - nginx location ^~ /branding-assets/ (web interface branding, docs/design/branding.md) in the same blocks
 #  - nginx locations for /provision-firmware/ (front, a 404 for none, the internal file location) in the same
 #    blocks, and the connection limit zone they use in /etc/nginx/conf.d/x_provision_firmware.conf
 #
-# Never touches provision.enabled, provision.template_dir, overlay files or assets.
+# Never touches provision.enabled, provision.template_dir, overlay files, assets or branding images.
 #
 # Because this runs before upgrade.php, a failure during "upgrade" must not leave new core code on
 # the old schema: upgrade-mode problems are warnings and the previous build (merged/current) stays.
@@ -65,7 +66,7 @@ runuser -u www-data -- find "$app_dir" -type f -exec chmod 0640 {} +
 info "x_provision_overlay: state directories"
 install -d -m 0750 -o www-data -g www-data /var/lib/fusionpbx
 install -d -m 0750 -o www-data -g www-data "$state_root"
-for dir in global domains assets merged firmware; do
+for dir in global domains assets merged firmware branding; do
 	install -d -m 0750 -o www-data -g www-data "$state_root/$dir"
 done
 [ -e "$state_root/.lock" ] || install -m 0640 -o www-data -g www-data /dev/null "$state_root/.lock"
@@ -126,6 +127,22 @@ asset_block() {
 	printf '\t\t%s\n' "include fastcgi_params;"
 	printf '\t\t%s\n' "fastcgi_param   SCRIPT_FILENAME $fusionpbx_dir/app/x_provision_overlay/assets.php;"
 	printf '\t\t%s\n' "fastcgi_param   SCRIPT_NAME /app/x_provision_overlay/assets.php;"
+	printf '\t%s\n' "}"
+	printf '\t%s\n' "#web interface branding images (app/x_provision_overlay/branding.php), no session (login page)"
+	printf '\t%s\n' "location ^~ /branding-assets/ {"
+	#the web interface is https only; the :80 block exempts nothing here
+	# shellcheck disable=SC2016  # nginx variables, written literally
+	printf '\t\t%s\n' 'if ($scheme = http) {'
+	# shellcheck disable=SC2016
+	printf '\t\t\t%s\n' 'return 301 https://$host$request_uri;'
+	printf '\t\t%s\n' "}"
+	printf '\t\t%s\n' "limit_except GET {"
+	printf '\t\t\t%s\n' "deny all;"
+	printf '\t\t%s\n' "}"
+	printf '\t\t%s\n' "fastcgi_pass unix:$socket;"
+	printf '\t\t%s\n' "include fastcgi_params;"
+	printf '\t\t%s\n' "fastcgi_param   SCRIPT_FILENAME $fusionpbx_dir/app/x_provision_overlay/branding.php;"
+	printf '\t\t%s\n' "fastcgi_param   SCRIPT_NAME /app/x_provision_overlay/branding.php;"
 	printf '\t%s\n' "}"
 	printf '\t%s\n' "#phone firmware (app/x_provision_overlay/firmware.php); none is a 404 without php; files go out through"
 	printf '\t%s\n' "#the internal location (X-Accel-Redirect), never by their path on disk"

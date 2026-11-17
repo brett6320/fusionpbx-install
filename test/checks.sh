@@ -94,6 +94,57 @@ while IFS= read -r line; do
 done < <(runuser -u www-data -- php /usr/src/x-install/test/firmware_rollout.php 2>&1 || echo "FAIL  firmware rollout test exited non-zero")
 systemctl start x-endpoint-manager.timer x-provision-firmware.timer
 
+#web interface branding: settings logic (written, removed, domain over system, own values kept), then a
+#system and a domain login logo served without a session and shown on the login page of each host
+while IFS= read -r line; do
+	case "$line" in
+		PASS*) printf '%s\n' "$line" ;;
+		*) printf '%s\n' "$line"; fail=1 ;;
+	esac
+done < <(runuser -u www-data -- php /usr/src/x-install/test/branding.php 2>&1 || echo "FAIL  branding test exited non-zero")
+br_paths=$(runuser -u www-data -- php /usr/src/x-install/test/branding.php --setup) || bad "branding setup"
+br_global=$(sed -n 1p <<<"$br_paths")
+br_domain=$(sed -n 2p <<<"$br_paths")
+br_ico=$(sed -n 3p <<<"$br_paths")
+br_gif=$(sed -n 4p <<<"$br_paths")
+br_root=/var/lib/fusionpbx/provision_overlay/branding
+#php-fpm keeps its own APCu settings cache, which the CLI cannot clear (the page clears it in php-fpm)
+systemctl restart "php$php_version-fpm"
+check "branding image served (200, same file)" cmp -s "$br_root/${br_global#/branding-assets/}" <(curl -fsk "https://127.0.0.1$br_global")
+check "branding domain image served" cmp -s "$br_root/${br_domain#/branding-assets/}" <(curl -fsk -H "Host: unknown.invalid" "https://127.0.0.1$br_domain")
+check "branding image headers" test "$(curl -sk -o /dev/null -D - "https://127.0.0.1$br_global" | grep -ciE '^(content-type: image/png|x-content-type-options: nosniff|cache-control: public, max-age=2592000, immutable|content-security-policy: default-src .none.)')" -ge 4
+#127.0.0.1:80 is upstream's loopback-only server block; the public :80 block answers on the container address
+br_ip=$(hostname -I | awk '{print $1}')
+check "branding ico served as an icon" grep -qxE '200 image/(vnd\.microsoft\.icon|x-icon)' <(curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' "https://127.0.0.1$br_ico")
+check "branding gif served as gif" test "$(curl -sk -o /dev/null -w '%{http_code} %{content_type}' "https://127.0.0.1$br_gif")" = "200 image/gif"
+check "branding over http redirects to https" test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://$br_ip$br_global")" = "301 https://$br_ip$br_global"
+check "branding unknown file is 404" test "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1/branding-assets/global/br-menu_logo-000000000000.png")" = 404
+check "branding metadata not served" test "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1/branding-assets/global/.branding.json")" = 404
+check "branding POST refused" test "$(curl -sk -o /dev/null -w '%{http_code}' -X POST "https://127.0.0.1$br_global")" = 403
+check "login page of the domain shows its logo" grep -qF "src='$br_domain'" <(curl -skL -H "Host: $test_domain" https://127.0.0.1/)
+check "login page of another host shows the system logo" grep -qF "src='$br_global'" <(curl -skL -H "Host: unknown.invalid" https://127.0.0.1/)
+check "branding cleanup" runuser -u www-data -- php /usr/src/x-install/test/branding.php --cleanup
+systemctl restart "php$php_version-fpm"
+check "login page back to the default logo" grep -qF "logo_login.png" <(curl -skL -H "Host: $test_domain" https://127.0.0.1/)
+
+#upgrade from the phone branding assets page: the page is gone after an upgrade (rsync --delete; the first
+#run plants a stale copy, which the next upgrade.sh run of install-test.sh must remove), images it stored are
+#still served to phones
+old_page=/var/www/fusionpbx/app/x_provision_overlay/x_provision_overlay_assets.php
+check "old branding assets page removed" test ! -e "$old_page"
+if [ -e /root/.x-test-old-page-planted ]; then
+	mv /root/.x-test-old-page-planted /root/.x-test-old-page-done
+elif [ ! -e /root/.x-test-old-page-done ]; then
+	printf '<?php exit; ?>\n' > "$old_page" && chown www-data:www-data "$old_page"
+	touch /root/.x-test-old-page-planted
+fi
+old_dir=/var/lib/fusionpbx/provision_overlay/assets/$(db "select domain_uuid from v_domains where domain_name = '$test_domain'")
+runuser -u www-data -- mkdir -p "$old_dir"
+# shellcheck disable=SC2016  # PHP variables, literal
+runuser -u www-data -- php -r 'imagepng(imagecreatetruecolor(8, 8), $argv[1]."/logo-old.png"); file_put_contents($argv[1]."/.meta.json", json_encode(["logo-old.png" => ["mime" => "image/png"]]));' "$old_dir"
+check "old branding asset still served" cmp -s "$old_dir/logo-old.png" <(curl -fsk -H "Host: $test_domain" "https://127.0.0.1/provision-assets/logo-old.png")
+rm -f "$old_dir/logo-old.png" "$old_dir/.meta.json"
+
 #web login lifetime, read the way phpsessionclean reads it
 check "php-fpm session lifetime is $session_lifetime" test "$(PHP_INI_SCAN_DIR="/etc/php/$php_version/fpm/conf.d" "php$php_version" -c "/etc/php/$php_version/fpm/php.ini" -r 'echo ini_get("session.gc_maxlifetime");')" = "$session_lifetime"
 
