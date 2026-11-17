@@ -5,7 +5,7 @@
 # Usage: test/install-test.sh [bookworm|trixie] [--keep] [--quick] [--rebuild-base]
 #   --quick         start from a saved base image (upstream's installer already run, our
 #                   layer not), then apply our layer and run the same checks. The preflight
-#                   refusal stage is skipped. For iterating; run the full test before merging.
+#                   refusal stage is skipped. README "Testing" says which run a PR needs before merging.
 #   --rebuild-base  with --quick, rebuild the base image even if one matches.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -20,6 +20,7 @@ for arg in "$@"; do
 		*) echo "Usage: $0 [bookworm|trixie] [--keep] [--quick] [--rebuild-base]" >&2; exit 2 ;;
 	esac
 done
+[ -n "$rebuild_base" ] && [ -z "$quick" ] && echo "WARN  --rebuild-base has no effect without --quick"
 name=x-fusionpbx-test-$release
 image=x-fusionpbx-test:$release
 
@@ -40,7 +41,10 @@ timings() {
 	stage_end
 	echo "== timings"
 	printf '%s\n' "${stages[@]}"
-	#phases inside install.sh, from its "Timing:" lines
+	#phases inside install.sh, from its "Timing:" lines; a full install that failed has not set install_log
+	if [ -z "${install_log:-}" ] && [ -z "$quick" ]; then
+		install_log=$(latest_log "$name" 2>/dev/null) || install_log=''
+	fi
 	if [ -n "${install_log:-}" ]; then
 		docker exec "$name" bash -c "cat $install_log" 2>/dev/null | sed -n 's/.*Timing: \(.*\) \([0-9]*\)$/\1 \2/p' | awk '
 			NR > 1 && p != "done" { printf "%6ss    install: %s\n", $NF - t, p }
@@ -53,7 +57,9 @@ cleanup() {
 	local rc=$?
 	timings || true
 	if [ "$keep" = "--keep" ]; then echo "Container $name kept."; else docker rm -f "$name" >/dev/null 2>&1 || true; fi
-	[ -n "${base_builder:-}" ] && docker rm -f "$base_builder" >/dev/null 2>&1
+	if [ -n "${base_builder:-}" ]; then
+		if [ "$keep" = "--keep" ]; then echo "Base builder $base_builder kept."; else docker rm -f "$base_builder" >/dev/null 2>&1 || true; fi
+	fi
 	return $rc
 }
 trap cleanup EXIT
@@ -74,25 +80,18 @@ run_opts=(--privileged --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw --tmp
 
 if [ -n "$quick" ]; then
 	#upstream names the domain after the host address, so the base and every quick run share a
-	#fixed address and hostname on their own network
-	net=x-fusionpbx-test net_ip=172.31.250.10
-	docker network inspect "$net" >/dev/null 2>&1 \
-		|| docker network create --subnet 172.31.250.0/24 "$net" >/dev/null
-	run_opts+=(--network "$net" --ip "$net_ip" --hostname x-fusionpbx-test)
+	#fixed address (one per release, so both can run at once) and hostname on their own network
+	net=x-fusionpbx-test net_host=x-fusionpbx-test
+	case "$release" in bookworm) net_ip=172.31.250.11 ;; *) net_ip=172.31.250.10 ;; esac
+	docker network create --subnet 172.31.250.0/24 "$net" >/dev/null 2>&1 \
+		|| docker network inspect "$net" >/dev/null
+	run_opts+=(--network "$net" --ip "$net_ip" --hostname "$net_host")
 
-	#the base depends on everything that runs before our layer: the release and test/Dockerfile, config.sh's
-	#upstream values and pins, install.sh, upstream.sh and common.sh. not the test image's id: other
-	#checkouts rebuild that tag; newer Debian packages are picked up with --rebuild-base
-	key=$( {
-		echo "$release"
-		cat test/Dockerfile
-		echo "$net_ip"
-		# shellcheck source=../config.sh
-		(. ./config.sh; for v in fusionpbx_repo fusionpbx_branch fusionpbx_commit fusionpbx_installer_repo fusionpbx_installer_commit \
-			fusionpbx_installer_dir domain_name system_username system_password switch_version php_version database_version \
-			application_speech application_sip_trunks install_log_dir; do echo "$v=${!v}"; done)
-		cat install.sh resources/upstream.sh resources/common.sh
-	} | shasum -a 256 | cut -c1-12)
+	#the base depends on everything that runs before our layer: the release and test/Dockerfile, the address
+	#and hostname, config.sh (all of it), install.sh, upstream.sh and common.sh. not the test image's id:
+	#other checkouts rebuild that tag; newer Debian packages are picked up with --rebuild-base
+	key=$(cat <(printf '%s\n' "$release" "$net_ip" "$net_host") test/Dockerfile config.sh install.sh resources/upstream.sh resources/common.sh \
+		| shasum -a 256 | cut -c1-12)
 	base=x-fusionpbx-base:$release-$key
 
 	stage "base image"
@@ -105,9 +104,12 @@ if [ -n "$quick" ]; then
 		docker exec -e X_INSTALL_STOP_AFTER_UPSTREAM=1 "$base_builder" bash /usr/src/x-install/install.sh
 		#stop systemd cleanly so PostgreSQL is committed shut down, not mid-write
 		docker stop -t 120 "$base_builder" >/dev/null
+		old_base=$(docker image inspect -f '{{.Id}}' "$base" 2>/dev/null) || old_base=''
 		docker commit -c 'CMD ["/sbin/init"]' "$base_builder" "$base" >/dev/null
 		docker rm -f "$base_builder" >/dev/null
 		base_builder=
+		#--rebuild-base re-tags the same name; drop the image it replaced
+		[ -z "$old_base" ] || docker rmi "$old_base" >/dev/null 2>&1 || true
 	else
 		echo "Reusing $base"
 	fi
@@ -119,6 +121,11 @@ if [ -n "$quick" ]; then
 	copy_tree "$name"
 
 	echo "== preflight refusal: SKIPPED (quick mode: the base is not a pristine host; the full run tests it)"
+	#a full run refuses when upstream's branch has moved past the pin (install.sh); so does a quick one
+	docker exec "$name" bash -c '. /usr/src/x-install/config.sh
+		head=$(git ls-remote "$fusionpbx_repo" "refs/heads/$fusionpbx_branch" | cut -f1)
+		[ -n "$head" ] || { echo "FAIL  cannot read upstream branch $fusionpbx_branch"; exit 1; }
+		[ "$head" = "$fusionpbx_commit" ] || { echo "FAIL  upstream $fusionpbx_branch is at $head, not the pinned $fusionpbx_commit"; exit 1; }'
 
 	stage "install (our layer, from the base image)"
 	#systemd boots the services upstream enabled; wait for them before applying our layer
@@ -134,7 +141,7 @@ if [ -n "$quick" ]; then
 	#the rest of install.sh: our layer, logged privately like install.sh does
 	install_log=/root/x-install-layer-$(date +%Y%m%d-%H%M%S).log
 	docker exec "$name" bash -c "set -o pipefail; install -m 0600 /dev/null $install_log && cd /usr/src/x-install && . resources/common.sh \
-		&& { info \"Timing: layer start \$(date +%s)\"; bash resources/apply.sh install; info \"Timing: done \$(date +%s)\"; } 2>&1 | tee -a $install_log"
+		&& { info \"Timing: layer start \$(date +%s)\"; bash resources/apply.sh install || exit 1; info \"Timing: done \$(date +%s)\"; } 2>&1 | tee -a $install_log"
 else
 	docker run -d --name "$name" "${run_opts[@]}" "$image"
 	copy_tree "$name"

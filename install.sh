@@ -111,5 +111,7 @@ stop_after_upstream=${X_INSTALL_STOP_AFTER_UPSTREAM:-}
 	info "Timing: done $(date +%s)"
 } 2>&1 | tee -a "$log"
 
-[ "$stop_after_upstream" = 1 ] && exit 0
+if [ "$stop_after_upstream" = 1 ]; then
+	exit 0
+fi
 info "Done. Reboot to finish, as upstream recommends. Credentials are in $log."
