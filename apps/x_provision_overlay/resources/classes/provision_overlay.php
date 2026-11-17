@@ -212,15 +212,6 @@ class provision_overlay {
 			&& preg_match(self::wallpaper_file_pattern, $name) !== 1;
 	}
 
-	public static function valid_vendor_setting(string $subcategory): bool {
-		foreach (self::vendor_setting_patterns as $pattern) {
-			if (preg_match($pattern, $subcategory) === 1) {
-				return true;
-			}
-		}
-		return false;
-	}
-
 	//-------------------------------------------------------------------------
 	// locking
 	//-------------------------------------------------------------------------

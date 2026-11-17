@@ -105,6 +105,8 @@ done < <(runuser -u www-data -- php /usr/src/x-install/test/branding.php 2>&1 ||
 br_paths=$(runuser -u www-data -- php /usr/src/x-install/test/branding.php --setup) || bad "branding setup"
 br_global=$(sed -n 1p <<<"$br_paths")
 br_domain=$(sed -n 2p <<<"$br_paths")
+br_ico=$(sed -n 3p <<<"$br_paths")
+br_gif=$(sed -n 4p <<<"$br_paths")
 br_root=/var/lib/fusionpbx/provision_overlay/branding
 #php-fpm keeps its own APCu settings cache, which the CLI cannot clear (the page clears it in php-fpm)
 systemctl restart "php$php_version-fpm"
@@ -113,6 +115,8 @@ check "branding domain image served" cmp -s "$br_root/${br_domain#/branding-asse
 check "branding image headers" test "$(curl -sk -o /dev/null -D - "https://127.0.0.1$br_global" | grep -ciE '^(content-type: image/png|x-content-type-options: nosniff|cache-control: public, max-age=2592000, immutable|content-security-policy: default-src .none.)')" -ge 4
 #127.0.0.1:80 is upstream's loopback-only server block; the public :80 block answers on the container address
 br_ip=$(hostname -I | awk '{print $1}')
+check "branding ico served as an icon" grep -qxE '200 image/(vnd\.microsoft\.icon|x-icon)' <(curl -sk -o /dev/null -w '%{http_code} %{content_type}\n' "https://127.0.0.1$br_ico")
+check "branding gif served as gif" test "$(curl -sk -o /dev/null -w '%{http_code} %{content_type}' "https://127.0.0.1$br_gif")" = "200 image/gif"
 check "branding over http redirects to https" test "$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "http://$br_ip$br_global")" = "301 https://$br_ip$br_global"
 check "branding unknown file is 404" test "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1/branding-assets/global/br-menu_logo-000000000000.png")" = 404
 check "branding metadata not served" test "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1/branding-assets/global/.branding.json")" = 404

@@ -209,10 +209,15 @@ the logos, favicon, page title and menu text of the web interface. Design:
   `/branding-assets/<global|domain uuid>/<file>` (the login page needs them).
 - The page writes theme settings (Default Settings for the system, Domain
   Settings for a domain), described as managed by Branding. **A theme setting
-  set by hand wins**: the page shows it and offers **Take Over**, which
-  disables that row (enable it again to go back). The system page title needs
-  this once, because FusionPBX seeds `theme > title = FusionPBX`. Disabling a
-  row the page wrote keeps it from being written again.
+  set by hand wins**: the page shows it, and superadmins get **Take Over**,
+  which disables that row (enable it again to go back). The system page title
+  needs this once, because FusionPBX seeds `theme > title = FusionPBX`
+  (deleting that row does not last: upgrades add it again). Disabling a row
+  the page wrote keeps it from being written again. A logo size of `auto` is
+  not written, so FusionPBX's default with its 300px cap applies.
+- Replaced images stay downloadable for a day, at most the two newest per
+  item. If the installer could not add the nginx location, the page warns
+  and refuses uploads.
 - A domain's branding shows to users signed in to that domain, and on the
   login page only when the site is opened with the domain's name. A Theme
   assigned under Themes that sets these items, or a user's own theme settings,

@@ -45,6 +45,11 @@
 	}
 	$scope = $scope_global ? provision_branding::global_scope : strtolower($domain_uuid);
 	$can_edit = $scope_global ? $can_global : permission_exists('x_provision_overlay_branding_edit');
+	//take over disables default or domain settings, which upstream lets only superadmins edit
+	$can_take_over = $can_edit && $can_global;
+
+//the nginx location the image urls need (null: the vhost cannot be read, then nothing is blocked)
+	$nginx_ready = provision_branding::nginx_ready();
 	$page = 'x_provision_overlay_branding.php'.($scope_global ? '?scope=global' : '');
 
 //get the upload limit
@@ -80,6 +85,16 @@
 
 		//upload or remove an image, save the texts, or take over an item an admin set
 			$result = null;
+			if (($action === 'upload' || $action === 'take_over') && $nginx_ready === false) {
+				message::add($text['warning-branding_nginx'], 'negative');
+				header('Location: '.$page);
+				exit;
+			}
+			if ($action === 'take_over' && !$can_take_over) {
+				message::add($text['error-permission'], 'negative');
+				header('Location: '.$page);
+				exit;
+			}
 			if ($action === 'upload') {
 				$result = $branding->store_upload($scope, $item, $_FILES['image'] ?? [], $asset_max_bytes, $username);
 			}
@@ -129,6 +144,24 @@
 		}
 	}
 
+//on the domain tab, the system default of an item as it applies: 'managed' (shown), 'unapplied' (set on the
+//system tab, but a default setting set by hand wins or ours was disabled), or 'none'
+	$global_state = [];
+	if (!$scope_global) {
+		$global_analysis = null;
+		try {
+			$global_analysis = $branding->analyze(provision_branding::global_scope, $global_meta);
+		}
+		catch (Throwable $e) {
+			provision_branding::log_error('analysis global', $e->getMessage());
+		}
+		foreach (provision_branding::items as $item => $definition) {
+			$set = isset($global_meta['images'][$item]) || isset($global_meta['values'][$item]);
+			$state = $global_analysis['items'][$item]['state'] ?? '';
+			$global_state[$item] = !$set ? 'none' : ($state === 'managed' ? 'managed' : 'unapplied');
+		}
+	}
+
 //files of the removed phone assets page, still served read only
 	$old_assets = $scope_global ? [] : provision_overlay::list_assets($domain_uuid);
 
@@ -165,24 +198,32 @@
 		echo "<div class='card'>".$text['error-branding_analysis']."</div>\n";
 		echo "<br />\n";
 	}
+	if ($nginx_ready === false) {
+		echo "<div class='card'><b>".$text['label-warning']."</b>: ".$text['warning-branding_nginx']."</div>\n";
+		echo "<br />\n";
+	}
 
 //state of an item and, when an admin's own value wins, the take over button
-	function x_provision_overlay_branding_state(string $item, ?array $analysis, bool $scope_global, bool $has_global, array $text): string {
+	function x_provision_overlay_branding_state(string $item, ?array $analysis, bool $scope_global, string $global_state, bool $can_take_over, array $text): string {
 		$state = $analysis['items'][$item]['state'] ?? '';
 		if ($state === 'managed') {
 			return $text['state-branding_managed'];
 		}
 		if ($state === 'own') {
-			return str_replace('{settings}', escape(implode(', ', $analysis['items'][$item]['sources'])), $scope_global ? $text['state-branding_own_global'] : $text['state-branding_own']);
+			$key = $scope_global ? 'state-branding_own_global' : ($can_take_over ? 'state-branding_own' : 'state-branding_own_superadmin');
+			return str_replace('{settings}', escape(implode(', ', $analysis['items'][$item]['sources'])), $text[$key]);
 		}
 		if ($state === 'optout') {
 			return $scope_global ? $text['state-branding_optout_global'] : $text['state-branding_optout'];
 		}
-		return ($scope_global || !$has_global) ? $text['state-branding_none'] : $text['state-branding_inherit'];
+		if ($scope_global || $global_state === 'none') {
+			return $text['state-branding_none'];
+		}
+		return ($global_state === 'managed') ? $text['state-branding_inherit'] : $text['state-branding_inherit_unapplied'];
 	}
 
-	function x_provision_overlay_branding_take_over(string $item, ?array $analysis, bool $can_edit, string $page, array $token, array $text): void {
-		if (!$can_edit || ($analysis['items'][$item]['state'] ?? '') !== 'own') {
+	function x_provision_overlay_branding_take_over(string $item, ?array $analysis, bool $can_take_over, string $page, array $token, array $text): void {
+		if (!$can_take_over || ($analysis['items'][$item]['state'] ?? '') !== 'own') {
 			return;
 		}
 		echo "<form method='post' class='inline' action='".escape($page)."'>\n";
@@ -199,7 +240,8 @@
 			continue;
 		}
 		$image = $meta['images'][$item] ?? null;
-		$global_image = $global_meta['images'][$item] ?? null;
+		//the system default image is previewed on the domain tab only while it applies
+		$global_image = (!$scope_global && ($global_state[$item] ?? '') === 'managed') ? ($global_meta['images'][$item] ?? null) : null;
 		$is_favicon = ($item === 'favicon');
 
 		echo "<div class='card'>\n";
@@ -218,7 +260,7 @@
 		echo "<td valign='top'>\n";
 		echo "<b>".$text['label-branding_'.$item]."</b><br />\n";
 		echo $text['description-branding_'.$item]."<br /><br />\n";
-		echo $text['label-status'].": ".x_provision_overlay_branding_state($item, $analysis, $scope_global, $global_image !== null, $text)."<br />\n";
+		echo $text['label-status'].": ".x_provision_overlay_branding_state($item, $analysis, $scope_global, $global_state[$item] ?? 'none', $can_take_over, $text)."<br />\n";
 		if ($image !== null) {
 			echo "<small>".escape($image['width'].' x '.$image['height'].', '.number_format($image['size'] / 1024, 1).' KiB, '.$image['uploaded_by'].' '.$image['uploaded'])."</small><br />\n";
 		}
@@ -242,7 +284,7 @@
 				echo button::create(['type'=>'submit','label'=>$text['button-remove'],'icon'=>$settings->get('theme', 'button_icon_delete'),'onclick'=>"if (!confirm('".escape(addslashes($text['confirm-branding_remove']))."')) { this.blur(); return false; }"]);
 				echo "</form>\n";
 			}
-			x_provision_overlay_branding_take_over($item, $analysis, $can_edit, $page, $token, $text);
+			x_provision_overlay_branding_take_over($item, $analysis, $can_take_over, $page, $token, $text);
 		}
 		echo "</td>\n";
 		echo "</tr>\n";
@@ -267,7 +309,7 @@
 			continue;
 		}
 		$value = $meta['values'][$item] ?? '';
-		$global_value = $global_meta['values'][$item] ?? null;
+		$global_value = (!$scope_global && ($global_state[$item] ?? '') === 'managed') ? ($global_meta['values'][$item] ?? null) : null;
 		echo "<tr>\n";
 		echo "<td width='30%' class='vncell' valign='top'>".$text['label-branding_'.$item]."</td>\n";
 		echo "<td width='70%' class='vtable' valign='top'>\n";
@@ -284,7 +326,7 @@
 			echo "	<input class='formfld' type='text' name='".escape($item)."' maxlength='".$max."' value='".escape($value)."'".($can_edit ? '' : " disabled='disabled'").">\n";
 		}
 		echo "	<br />".$text['description-branding_'.$item]."<br />\n";
-		echo "	".$text['label-status'].": ".x_provision_overlay_branding_state($item, $analysis, $scope_global, $global_value !== null, $text)."\n";
+		echo "	".$text['label-status'].": ".x_provision_overlay_branding_state($item, $analysis, $scope_global, $global_state[$item] ?? 'none', $can_take_over, $text)."\n";
 		if (!$scope_global && $value === '' && $global_value !== null) {
 			echo " (".escape($global_value).")";
 		}
@@ -300,9 +342,9 @@
 
 	//forms cannot nest: the take over buttons of the texts follow the form
 	foreach (provision_branding::items as $item => $definition) {
-		if ($definition['kind'] !== 'image' && $can_edit && ($analysis['items'][$item]['state'] ?? '') === 'own') {
+		if ($definition['kind'] !== 'image' && $can_take_over && ($analysis['items'][$item]['state'] ?? '') === 'own') {
 			echo "<br />".$text['label-branding_'.$item].": \n";
-			x_provision_overlay_branding_take_over($item, $analysis, $can_edit, $page, $token, $text);
+			x_provision_overlay_branding_take_over($item, $analysis, $can_take_over, $page, $token, $text);
 		}
 	}
 	echo "</div>\n";

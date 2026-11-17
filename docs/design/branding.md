@@ -73,11 +73,14 @@ its menu item.
 
 - Images: the value is a path, `/branding-assets/<scope>/<file>` (section 5),
   so it works on any host name the page is opened with.
-- Title and menu brand text: up to 64 characters, no `< > " ' & \` `` ` `` or
-  control characters. Upstream prints some of these values without escaping
-  (e.g. the menu brand text), so markup characters are refused.
-- Logo size: `auto` or a number with `px`, `%`, `em`, `rem`, `vw` or `vh`.
-  The value lands in a `style` attribute.
+- Title and menu brand text: up to 64 characters. Refused: double and single
+  quotes, backslash, backtick, `&`, `<`, `>` and control characters. Upstream
+  prints some of these values without escaping (e.g. the menu brand text), so
+  markup characters are refused; the help text lists them.
+- Logo size: a number with `px`, `%`, `em`, `rem`, `vw` or `vh`. The value
+  lands in a `style` attribute. `auto` is treated as empty and not written:
+  upstream's default `auto; max-width: 300px` (height likewise) then applies,
+  keeping its 300px cap, which a written `auto` would drop.
 - Menu brand: one of the four types.
 
 An empty text field removes the item.
@@ -94,10 +97,21 @@ A row is ours only while its value equals what we wrote, as for wallpapers:
 - an enabled row of the same subcategory in the same scope that is not ours
   (set by hand under Default or Domain Settings): **own value, wins**; we
   write nothing for the whole item and the page names the setting. The admin
-  can change it there, or press **Take Over**, which disables that row (kept,
-  so enabling it again gives the old value back) and writes ours. This is
-  needed once for the system title, because upstream seeds an enabled
-  `theme > title = FusionPBX` default setting.
+  can change it there, or press **Take Over**, which disables exactly the rows
+  that make the item own (including one of ours an admin changed) and writes
+  ours, in one transaction: either both happen or neither. The rows are kept,
+  so enabling one again gives the old value back. This is needed once for the
+  system title, because upstream seeds an enabled `theme > title = FusionPBX`
+  default setting. Deleting that seeded row instead does not last: an upgrade
+  (`upgrade.php --defaults`) adds it again, so use Take Over.
+- **Take Over is superadmin only** (`x_provision_overlay_branding_global`),
+  also on the domain tab: at the pin, default and domain settings can be
+  edited only by superadmins (`domain_setting_*`, `default_setting_*`), so a
+  domain admin must not be able to disable them through this page. A domain
+  admin sees "set by a superadmin under Domain Settings" instead.
+- The page reads the rows when it is shown. After a row of ours is deleted by
+  hand, the item can still show "Set here" until the next change of that
+  scope, which drops the link and writes the row again.
 
 Writes run in one transaction. Updates and deletes are guarded by the value
 written and `enabled = true`, so a row an admin changed meanwhile is left
@@ -124,8 +138,11 @@ alone. Removing an image or a text deletes our rows. After writing,
   (www-data, 0750/0640), with `.branding.json` (images: file, type, size,
   dimensions, sha256, uploader; values; retired files). A new image gets a new
   name and URL, so browsers can cache an image for a long time and still see a
-  change at once. The previous file is kept a day (pages already rendered
-  still load it), then deleted at the next change of that scope.
+  change at once. A replaced or removed file is kept a day (pages already
+  rendered still load it), but at most the **2 newest retired files per item**:
+  older ones are deleted at once, so repeated uploads cannot fill the disk.
+  Deletion runs at the next change of that scope, only after the settings were
+  written, and never removes a file one of our settings still points at.
 - Changes of all scopes are serialized by a flock on `branding/.branding.lock`.
 
 ## 5. Serving
@@ -136,7 +153,11 @@ name: a superadmin may view a domain under another host.
 
 - nginx: `location ^~ /branding-assets/` in the installer's marker block of
   every :80/:443 server block (`resources/apps/provision_overlay.sh`),
-  `limit_except GET`, fastcgi to `app/x_provision_overlay/branding.php`. On
+  `limit_except GET`, fastcgi to `app/x_provision_overlay/branding.php`. The
+  installer only warns when it cannot change the vhost (unbalanced markers,
+  `nginx -t` failing); the page then reads the vhost, shows a warning and
+  refuses image uploads and Take Over, so no setting points at a URL nginx
+  does not serve (when the vhost cannot be read, nothing is blocked). On
   :80 the location answers with a 301 to https (`if ($scheme = http)`), like
   the rest of the UI; upstream's :80 block would otherwise not redirect it.
 - `branding.php`: `$no_session = true` (the login page needs the images before
@@ -177,7 +198,9 @@ name: a superadmin may view a domain under another host.
 Default (superadmin). One card per image (preview, status, upload, remove,
 take over) and one form for the texts, sizes and menu brand type. On the
 domain tab an item without a value previews the system default, faded, and
-shows its value. Status per item: set here, not set (system default /
+shows its value, only while that default applies; when it is set on the
+System Default tab but not applied (a default setting set by hand wins, or
+ours was disabled) the item says so instead. Status per item: set here, not set (system default /
 FusionPBX default), not applied: own setting (names it; Take Over), not
 applied: our row disabled.
 

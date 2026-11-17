@@ -35,6 +35,7 @@ class provision_branding {
 
 	//limits
 	const grace_seconds = 86400;
+	const retired_keep = 2;
 	const lock_timeout = 30;
 	const favicon_max_bytes = 262144;
 	const favicon_max_dimension = 512;
@@ -46,6 +47,7 @@ class provision_branding {
 	const global_scope = 'global';
 	const file_pattern = '/^br-([a-z_]+)-([0-9a-f]{12})\.(png|jpg|gif|webp|ico)$/';
 	const url_path = '/branding-assets/';
+	const nginx_conf = '/etc/nginx/sites-available/fusionpbx';
 
 	//theme settings written
 	const setting_category = 'theme';
@@ -137,10 +139,26 @@ class provision_branding {
 	}
 
 	/**
-	 * Valid logo size: written into a style attribute by the login views.
+	 * Valid logo size: written into a style attribute by the login views. 'auto' is not written (save_values()
+	 * treats it as empty): upstream's default 'auto; max-width: 300px' then applies, with its cap.
 	 */
 	public static function valid_size(string $value): bool {
-		return preg_match('/^(auto|[0-9]{1,4}(px|%|em|rem|vw|vh))$/', $value) === 1;
+		return preg_match('/^[0-9]{1,4}(px|%|em|rem|vw|vh)$/', $value) === 1;
+	}
+
+	/**
+	 * Whether the installer's nginx location for /branding-assets/ is in the vhost: true, false, or null when
+	 * the file cannot be read (then the page does not block).
+	 */
+	public static function nginx_ready(): ?bool {
+		if (!is_file(self::nginx_conf) || !is_readable(self::nginx_conf)) {
+			return null;
+		}
+		$content = @file_get_contents(self::nginx_conf);
+		if (!is_string($content)) {
+			return null;
+		}
+		return strpos($content, 'location ^~ '.self::url_path.' {') !== false;
 	}
 
 	/**
@@ -463,7 +481,10 @@ class provision_branding {
 			}
 			self::log('branding_image_saved', $scope, 'item='.$item.' file='.$file, $username);
 			$result['apply'] = $this->apply($scope);
-			$this->remove_retired($scope);
+			//settings may still point at the old file when they could not be written
+			if ($result['apply']['success']) {
+				$this->remove_retired($scope);
+			}
 			return $result;
 		}
 		finally {
@@ -502,7 +523,9 @@ class provision_branding {
 			}
 			self::log('branding_removed', $scope, 'item='.$item, $username);
 			$result['apply'] = $this->apply($scope);
-			$this->remove_retired($scope);
+			if ($result['apply']['success']) {
+				$this->remove_retired($scope);
+			}
 			return $result;
 		}
 		finally {
@@ -527,6 +550,9 @@ class provision_branding {
 				continue;
 			}
 			$value = trim($value);
+			if (self::items[$item]['kind'] === 'size' && strtolower($value) === 'auto') {
+				$value = '';
+			}
 			if ($value !== '' && !self::valid_value($item, $value)) {
 				$result['error'] = (self::items[$item]['kind'] === 'size') ? 'error-branding_size' : 'error-branding_text';
 				return $result;
@@ -565,7 +591,9 @@ class provision_branding {
 	}
 
 	/**
-	 * Deletes files of a scope retired longer than the grace period, and stray temp files.
+	 * Deletes retired files of a scope: those retired longer than the grace period, and at once all but the
+	 * newest retired_keep of each item, so repeated uploads cannot fill the disk. A file one of our settings
+	 * still points at is kept. Also deletes stray temp files.
 	 */
 	private function remove_retired(string $scope): void {
 		$dir = self::scope_dir($scope);
@@ -577,14 +605,38 @@ class provision_branding {
 		foreach ($meta['images'] as $image) {
 			$current[$image['file']] = true;
 		}
+		$referenced = [];
+		if (is_object($this->database)) {
+			try {
+				$sql = "select branding_value from v_x_provision_overlay_branding_links ";
+				$sql .= ($scope === self::global_scope) ? "where domain_uuid is null " : "where domain_uuid = :domain_uuid ";
+				foreach ($this->query($sql, self::table($scope)['parameters']) as $row) {
+					$referenced[basename((string) $row['branding_value'])] = true;
+				}
+			}
+			catch (Throwable $e) {
+				//unknown references: delete nothing
+				self::log_error('retired '.$scope, $e->getMessage());
+				return;
+			}
+		}
+
+		//newest first per item
+		$retired = $meta['retired'];
+		uasort($retired, function ($a, $b) { return strcmp($b, $a); });
+		$kept = [];
 		$changed = false;
-		foreach ($meta['retired'] as $name => $time) {
+		foreach ($retired as $name => $time) {
 			if (isset($current[$name])) {
 				unset($meta['retired'][$name]);
 				$changed = true;
 				continue;
 			}
-			if (time() - (int) strtotime($time) >= self::grace_seconds) {
+			preg_match(self::file_pattern, $name, $m);
+			$item = $m[1] ?? '';
+			$kept[$item] = ($kept[$item] ?? 0) + 1;
+			$expired = (time() - (int) strtotime($time) >= self::grace_seconds) || $kept[$item] > self::retired_keep;
+			if ($expired && !isset($referenced[$name])) {
 				@unlink($dir.'/'.$name);
 				unset($meta['retired'][$name]);
 				$changed = true;
@@ -666,7 +718,7 @@ class provision_branding {
 	 * applies), own (a row an admin set wins: sources lists the subcategories), optout (one of our rows was
 	 * disabled).
 	 *
-	 * @return array ['items' => [item => ['state' => string, 'sources' => [subcategory]]], 'plan' => [...]]
+	 * @return array ['items' => [item => ['state' => string, 'sources' => [subcategory], 'own_rows' => [setting uuid]]], 'plan' => [...]]
 	 */
 	public function analyze(string $scope, ?array $meta = null): array {
 		if (!is_object($this->database) || self::scope_dir($scope) === null) {
@@ -730,11 +782,13 @@ class provision_branding {
 		$items = [];
 		foreach (self::items as $item => $definition) {
 			$sources = [];
+			$own_rows = [];
 			$optout = false;
 			foreach ($definition['subcategories'] as $subcategory) {
 				foreach ($rows as $uuid => $row) {
 					if ($row['subcategory'] === $subcategory && self::bool_value($row['enabled']) && !isset($ours[$uuid])) {
 						$sources[$subcategory] = $subcategory;
+						$own_rows[] = (string) $uuid;
 					}
 				}
 				foreach ($links[$subcategory] ?? [] as $link) {
@@ -756,7 +810,7 @@ class provision_branding {
 			else {
 				$state = 'managed';
 			}
-			$items[$item] = ['state' => $state, 'sources' => array_values($sources)];
+			$items[$item] = ['state' => $state, 'sources' => array_values($sources), 'own_rows' => $own_rows];
 		}
 
 		//diff our rows against the desired ones
@@ -793,13 +847,17 @@ class provision_branding {
 	 * Writes the settings of a scope from its metadata. Updates and deletes are guarded by the value written
 	 * and the row being enabled, so a row an admin changed or disabled meanwhile is left alone.
 	 *
-	 * @return array ['success' => bool, 'error' => string, 'items' => [item => state]]
+	 * $disable: setting uuids of rows an admin set (take_over()), disabled in the same transaction first, so
+	 * either they are disabled and ours written, or nothing changes.
+	 *
+	 * @return array ['success' => bool, 'error' => string, 'items' => [item => state], 'disabled' => int]
 	 */
-	public function apply(string $scope): array {
-		$result = ['success' => false, 'error' => '', 'items' => []];
+	public function apply(string $scope, array $disable = []): array {
+		$result = ['success' => false, 'error' => '', 'items' => [], 'disabled' => 0];
 		try {
-			$analysis = $this->analyze($scope);
-			$plan = $analysis['plan'];
+			if (!is_object($this->database) || self::scope_dir($scope) === null) {
+				throw new RuntimeException('a database connection and a scope are required');
+			}
 			$t = self::table($scope);
 			$p = $t['prefix'];
 			$domain_uuid = ($scope === self::global_scope) ? null : $scope;
@@ -812,6 +870,18 @@ class provision_branding {
 			}
 			$pdo->beginTransaction();
 			try {
+				if (!empty($disable)) {
+					[$in, $parameters] = self::in_list('u', $disable);
+					$sql = "update ".$t['table']." set ".$p."_enabled = false, update_date = now() ";
+					$sql .= "where ".$p."_uuid in (".$in.") ";
+					$sql .= "and ".$p."_category = :category ";
+					$sql .= "and ".$p."_enabled = true ";
+					$sql .= $t['where'];
+					$sql .= "returning ".$p."_uuid ";
+					$result['disabled'] = count($this->query($sql, $parameters + ['category' => self::setting_category] + $t['parameters']));
+				}
+				$analysis = $this->analyze($scope);
+				$plan = $analysis['plan'];
 				foreach ($plan['drop_links'] as $link_uuid) {
 					$this->query("delete from v_x_provision_overlay_branding_links where branding_link_uuid = :uuid ", ['uuid' => $link_uuid]);
 				}
@@ -885,25 +955,16 @@ class provision_branding {
 			return $result;
 		}
 		try {
+			//exactly the rows that make the item own, including one of ours an admin changed (its link is
+			//dropped by the same apply)
 			$analysis = $this->analyze($scope);
-			$sources = $analysis['items'][$item]['sources'] ?? [];
-			if (($analysis['items'][$item]['state'] ?? '') !== 'own' || empty($sources)) {
-				$result['apply'] = $this->apply($scope);
+			$rows = (($analysis['items'][$item]['state'] ?? '') === 'own') ? ($analysis['items'][$item]['own_rows'] ?? []) : [];
+			$result['apply'] = $this->apply($scope, $rows);
+			if (!$result['apply']['success']) {
+				$result['error'] = 'error-branding_apply';
 				return $result;
 			}
-			$t = self::table($scope);
-			$p = $t['prefix'];
-			[$in, $parameters] = self::in_list('s', $sources);
-			$sql = "update ".$t['table']." set ".$p."_enabled = false, update_date = now() ";
-			$sql .= "where ".$p."_category = :category ";
-			$sql .= "and ".$p."_subcategory in (".$in.") ";
-			$sql .= "and ".$p."_enabled = true ";
-			$sql .= $t['where'];
-			$sql .= "and ".$p."_uuid not in (select setting_uuid from v_x_provision_overlay_branding_links where setting_uuid is not null) ";
-			$sql .= "returning ".$p."_uuid ";
-			$disabled = $this->query($sql, $parameters + ['category' => self::setting_category] + $t['parameters']);
-			self::log('branding_take_over', $scope, 'item='.$item.' disabled='.count($disabled), $username);
-			$result['apply'] = $this->apply($scope);
+			self::log('branding_take_over', $scope, 'item='.$item.' disabled='.$result['apply']['disabled'], $username);
 			return $result;
 		}
 		catch (Throwable $e) {

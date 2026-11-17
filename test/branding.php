@@ -51,6 +51,20 @@ function image(string $path, int $width, int $height, int $red): string {
 	imagepng($image, $path);
 	return $path;
 }
+//an ICO holding one PNG (GD cannot write ICO)
+function ico(string $path): string {
+	$png = image($path.'.png', 32, 32, 120);
+	$data = file_get_contents($png);
+	unlink($png);
+	file_put_contents($path, pack('vvv', 0, 1, 1).pack('CCCCvvVV', 32, 32, 0, 0, 1, 32, strlen($data), 22).$data);
+	return $path;
+}
+function gif(string $path): string {
+	$image = imagecreatetruecolor(120, 40);
+	imagefill($image, 0, 0, imagecolorallocate($image, 30, 160, 60));
+	imagegif($image, $path);
+	return $path;
+}
 function setting(string $domain_uuid, string $subcategory): string {
 	global $database;
 	$settings = new settings(['database' => $database, 'domain_uuid' => $domain_uuid, 'allow_caching' => false]);
@@ -77,16 +91,27 @@ if ($mode === '--cleanup') {
 	exit($fail);
 }
 if ($mode === '--setup') {
-	$a = $branding->store_image($global, 'login_logo', image($dir.'/g.png', 300, 90, 10), 'checks');
-	$b = $branding->store_image($domain_uuid, 'login_logo', image($dir.'/d.png', 300, 90, 200), 'checks');
-	if ($a['error'] !== null || $b['error'] !== null || !($a['apply']['success'] ?? false) || !($b['apply']['success'] ?? false)) {
-		fwrite(STDERR, "setup failed\n");
-		exit(1);
+	$stored = [
+		$branding->store_image($global, 'login_logo', image($dir.'/g.png', 300, 90, 10), 'checks'),
+		$branding->store_image($domain_uuid, 'login_logo', image($dir.'/d.png', 300, 90, 200), 'checks'),
+		$branding->store_image($global, 'favicon', ico($dir.'/f.ico'), 'checks'),
+		$branding->store_image($global, 'menu_logo', gif($dir.'/m.gif'), 'checks'),
+	];
+	foreach ($stored as $result) {
+		if ($result['error'] !== null || !($result['apply']['success'] ?? false)) {
+			fwrite(STDERR, "setup failed: ".($result['error'] ?? $result['apply']['error'] ?? '')."\n");
+			exit(1);
+		}
 	}
-	echo provision_branding::url($global, provision_branding::read_meta($global)['images']['login_logo']['file'])."\n";
+	$global_meta = provision_branding::read_meta($global);
+	echo provision_branding::url($global, $global_meta['images']['login_logo']['file'])."\n";
 	echo provision_branding::url($domain_uuid, provision_branding::read_meta($domain_uuid)['images']['login_logo']['file'])."\n";
+	echo provision_branding::url($global, $global_meta['images']['favicon']['file'])."\n";
+	echo provision_branding::url($global, $global_meta['images']['menu_logo']['file'])."\n";
 	exit(0);
 }
+
+check('branding: nginx location installed', provision_branding::nginx_ready() === true);
 
 //system default menu logo: both menu settings written as default settings, recorded as ours
 $result = $branding->store_image($global, 'menu_logo', image($dir.'/global.png', 400, 100, 10), 'checks');
@@ -114,6 +139,14 @@ $row_after = q("select domain_setting_uuid from v_domain_settings where domain_u
 check('branding: replaced image updates the row', $new_url !== $domain_url && values($domain_uuid, 'menu_brand_image') === [$new_url] && $row_before == $row_after);
 check('branding: replaced file served during grace', provision_branding::file_info($domain_uuid, basename($domain_url)) !== null);
 
+//repeated uploads keep at most two retired files per item
+for ($i = 0; $i < 4; $i++) {
+	$branding->store_image($domain_uuid, 'menu_logo', image($dir.'/r'.$i.'.png', 400, 100, 20 + $i), 'checks');
+}
+$retired = array_filter(array_keys(provision_branding::read_meta($domain_uuid)['retired']), function ($name) { return strpos($name, 'br-menu_logo-') === 0; });
+$on_disk = glob(provision_branding::scope_dir($domain_uuid).'/br-menu_logo-*.png') ?: [];
+check('branding: retired files capped', count($retired) === provision_branding::retired_keep && count($on_disk) === provision_branding::retired_keep + 1, count($retired).' retired, '.count($on_disk).' on disk');
+
 //removing the domain image removes our rows; the system default applies again
 $result = $branding->remove($domain_uuid, 'menu_logo', 'checks');
 check('branding: domain image removed', $result['error'] === null && values($domain_uuid, 'menu_brand_image') === [] && values($domain_uuid, 'menu_side_brand_image_expanded') === []);
@@ -131,6 +164,8 @@ imagejpeg($jpeg, $dir.'/f.jpg');
 check('branding: jpeg favicon refused', $branding->store_image($global, 'favicon', $dir.'/f.jpg', 'checks')['error'] === 'error-branding_favicon_type');
 check('branding: markup in text refused', $branding->save_values($domain_uuid, ['menu_brand_text' => 'Acme <b>'], 'checks')['error'] === 'error-branding_text');
 check('branding: css in size refused', $branding->save_values($domain_uuid, ['login_logo_width' => '10px; background: red'], 'checks')['error'] === 'error-branding_size');
+$result = $branding->save_values($domain_uuid, ['login_logo_width' => 'auto'], 'checks');
+check('branding: auto size is not written (upstream cap applies)', $result['error'] === null && values($domain_uuid, 'login_logo_width') === []);
 
 //texts: written, changed in place, removed when emptied
 $result = $branding->save_values($domain_uuid, ['menu_brand_text' => 'Acme Voice', 'menu_brand_type' => 'image_text', 'login_logo_width' => '240px'], 'checks');
@@ -149,6 +184,13 @@ $result = $branding->take_over($domain_uuid, 'favicon', 'checks');
 $favicon_url = provision_branding::url($domain_uuid, (string) (provision_branding::read_meta($domain_uuid)['images']['favicon']['file'] ?? ''));
 check('branding: take over', $result['error'] === null && values($domain_uuid, 'favicon') === [$favicon_url]
 	&& count(q("select 1 from v_domain_settings where domain_setting_uuid = :u and domain_setting_enabled = false", ['u' => $own_uuid])) === 1);
+
+//take over after an admin changed one of our rows: that row is disabled and ours written at the first press
+q("update v_domain_settings set domain_setting_value = '/edited.ico' where domain_uuid = :d and domain_setting_subcategory = 'favicon' and domain_setting_value = :v", ['d' => $domain_uuid, 'v' => $favicon_url]);
+$result = $branding->take_over($domain_uuid, 'favicon', 'checks');
+check('branding: take over of an edited row', $result['error'] === null && values($domain_uuid, 'favicon') === [$favicon_url]
+	&& count(q("select 1 from v_domain_settings where domain_uuid = :d and domain_setting_value = '/edited.ico' and domain_setting_enabled = false", ['d' => $domain_uuid])) === 1);
+q("delete from v_domain_settings where domain_uuid = :d and domain_setting_value = '/edited.ico'", ['d' => $domain_uuid]);
 
 //a row of ours disabled by an admin is an opt-out: not written again
 q("update v_domain_settings set domain_setting_enabled = false where domain_uuid = :d and domain_setting_subcategory = 'favicon' and domain_setting_value = :v", ['d' => $domain_uuid, 'v' => $favicon_url]);
