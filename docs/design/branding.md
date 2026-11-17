@@ -186,8 +186,9 @@ name: a superadmin may view a domain under another host.
   are; change or delete them under Domain Settings.
 - The permission `x_provision_overlay_asset_edit` stays: the Wallpapers page
   uses it for domain wallpapers.
-- The **menu item** Branding (under the parent of Provision Templates) is
-  added by a fresh install. On an upgrade upstream does not restore menus;
+- The **menu item** Branding is under Advanced and is added by a fresh
+  install. Upstream shows the Advanced menu to superadmins only, so domain
+  admins reach the page from the Branding button on Provision Templates. On an upgrade upstream does not restore menus;
   run `upgrade.sh --restore-menu`, or add it under Menu Manager. The page is
   also reachable from the Branding button on Provision Templates.
 - The new table and permissions are created by `upgrade.php` as usual.
