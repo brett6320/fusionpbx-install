@@ -62,6 +62,39 @@ done
 echo "PASS  optional apps update as www-data"
 docker exec -i "$name" bash -s < test/checks.sh
 
+echo "== theme: Cobalt Blue set by an earlier version moves to Dark; an admin's choice and edits are kept"
+theme_db() {
+	docker exec "$name" bash -c "cd / && runuser -u postgres -- psql -d fusionpbx -qtAX -c \"$1\""
+}
+theme_defaults() {
+	docker exec "$name" bash -c 'cd /var/www/fusionpbx && php core/upgrade/upgrade.php --defaults' >/dev/null
+}
+theme_value() {
+	theme_db "select default_setting_value from v_default_settings where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'"
+}
+#an install from before this change: Cobalt Blue default and its marker, no Dark marker
+theme_db "delete from v_default_settings where default_setting_category = 'x_install' and default_setting_subcategory = 'theme_dark_initialized'; insert into v_default_settings (default_setting_uuid, default_setting_category, default_setting_subcategory, default_setting_name, default_setting_value, default_setting_enabled) values (gen_random_uuid(), 'x_install', 'theme_initialized', 'boolean', 'true', false); update v_default_settings set default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44' where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
+theme_defaults
+[ "$(theme_value)" = 56c90fe5-8216-47e9-a846-1c72c5f19528 ] || { echo "FAIL  Cobalt Blue default not moved to Dark ($(theme_value))"; exit 1; }
+#an admin who chose another theme keeps it
+theme_db "delete from v_default_settings where default_setting_category = 'x_install' and default_setting_subcategory = 'theme_dark_initialized'; update v_default_settings set default_setting_value = '7ca4a961-2b70-457d-93b8-026d687a9741' where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
+theme_defaults
+[ "$(theme_value)" = 7ca4a961-2b70-457d-93b8-026d687a9741 ] || { echo "FAIL  admin's theme overwritten ($(theme_value))"; exit 1; }
+#Cobalt Blue chosen by an admin (no earlier marker) is kept too
+theme_db "delete from v_default_settings where default_setting_category = 'x_install' and default_setting_subcategory in ('theme_initialized', 'theme_dark_initialized'); update v_default_settings set default_setting_value = 'eda762b3-e356-4225-a394-38b5f092fd44' where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
+theme_defaults
+[ "$(theme_value)" = eda762b3-e356-4225-a394-38b5f092fd44 ] || { echo "FAIL  admin's Cobalt Blue overwritten ($(theme_value))"; exit 1; }
+#an admin's edit of a Dark setting is kept, and with the marker set nothing changes the default
+theme_db "update v_theme_settings set theme_setting_value = '#123456' where theme_uuid = '56c90fe5-8216-47e9-a846-1c72c5f19528' and theme_setting_name = 'body_color'" >/dev/null
+theme_defaults
+[ "$(theme_db "select string_agg(theme_setting_value, ',') from v_theme_settings where theme_uuid = '56c90fe5-8216-47e9-a846-1c72c5f19528' and theme_setting_name = 'body_color'")" = '#123456' ] || { echo "FAIL  admin's theme setting overwritten or duplicated"; exit 1; }
+[ "$(theme_value)" = eda762b3-e356-4225-a394-38b5f092fd44 ] || { echo "FAIL  default changed again with the marker set ($(theme_value))"; exit 1; }
+#back to the installed state for what follows
+theme_db "update v_theme_settings set theme_setting_value = '#1f2937' where theme_uuid = '56c90fe5-8216-47e9-a846-1c72c5f19528' and theme_setting_name = 'body_color'; update v_default_settings set default_setting_value = '56c90fe5-8216-47e9-a846-1c72c5f19528' where default_setting_uuid = 'b1a99e57-8d4a-4bbf-910f-1f5a86d6532a'" >/dev/null
+docker exec "$name" bash -c 'systemctl restart "php$(php -r "echo PHP_MAJOR_VERSION.\".\".PHP_MINOR_VERSION;")-fpm"'
+echo "PASS  theme default moved once, admin choices and edits kept"
+docker exec -i "$name" bash -s < test/checks.sh
+
 echo "== Amazon Time Sync Service on EC2 only"
 docker exec -e X_IS_EC2=1 "$name" bash /usr/src/x-install/resources/timesync.sh >/dev/null
 docker exec "$name" grep -qx 'server 169.254.169.123 prefer iburst minpoll 4 maxpoll 4' /etc/chrony/sources.d/x-aws-time.sources || { echo "FAIL  Amazon time source not written on EC2"; exit 1; }

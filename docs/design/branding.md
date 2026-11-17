@@ -225,8 +225,8 @@ applied: our row disabled.
 
 - **A Theme assigned to a domain that sets one of these settings, or a user's
   own theme setting, wins** over domain branding (load order, section 2). The
-  page says so. The Themes upstream ships (including Cobalt Blue, the default
-  this installer selects) set none of them.
+  page says so. The Themes upstream ships and this installer's Light and Dark
+  (Dark is the default it selects) set none of them.
 - **Deleted domains**: their `branding/<domain_uuid>/` directory stays (the
   settings and link rows go with the domain); `branding.php` no longer serves
   it.
