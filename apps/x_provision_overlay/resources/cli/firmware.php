@@ -17,7 +17,7 @@
 /*
 	Phone firmware CLI (docs/design/provision_firmware.md). Run as www-data:
 
-		runuser -u www-data -- php firmware.php --import <file> [--version <v>] [--models <list>] [--note <text>]
+		runuser -u www-data -- php firmware.php --import <file> [--vendor <name>] [--version <v>] [--models <list>] [--note <text>]
 		runuser -u www-data -- php firmware.php --sync                  link the phones of all domains
 		runuser -u www-data -- php firmware.php --sync --domain <uuid>  one domain
 		runuser -u www-data -- php firmware.php --run-rollouts          move the active rollouts on
@@ -52,7 +52,7 @@
 	}
 	while ($valid && $i < count($argv)) {
 		$name = $argv[$i];
-		$allowed = ($command === '--import') ? ['--version', '--models', '--note'] : (($command === '--sync') ? ['--domain'] : []);
+		$allowed = ($command === '--import') ? ['--vendor', '--version', '--models', '--note'] : (($command === '--sync') ? ['--domain'] : []);
 		if (!in_array($name, $allowed, true) || !isset($argv[$i + 1]) || isset($options[substr($name, 2)])) {
 			$valid = false;
 			break;
@@ -61,7 +61,7 @@
 		$i += 2;
 	}
 	if (!$valid) {
-		fwrite(STDERR, "usage: php firmware.php --import <file> [--version <v>] [--models <list>] [--note <text>] | --sync [--domain <uuid>] | --run-rollouts | --cleanup\n");
+		fwrite(STDERR, "usage: php firmware.php --import <file> [--vendor <name>] [--version <v>] [--models <list>] [--note <text>] | --sync [--domain <uuid>] | --run-rollouts | --cleanup\n");
 		exit(2);
 	}
 
@@ -104,7 +104,7 @@
 //run
 	switch ($command) {
 		case '--import':
-			$result = $firmware->import($options['file'], basename($options['file']), $options['version'] ?? '', $options['models'] ?? '', $options['note'] ?? '', 'cli');
+			$result = $firmware->import($options['file'], basename($options['file']), $options['version'] ?? '', $options['models'] ?? '', $options['note'] ?? '', 'cli', $options['vendor'] ?? '');
 			if ($result['error'] !== null) {
 				$messages = [
 					'error-firmware_file' => 'the file is empty or cannot be read',
@@ -113,6 +113,8 @@
 					'error-firmware_version' => 'a Grandstream file needs --version (e.g. 1.0.11.79)',
 					'error-firmware_version_mismatch' => '--version differs from the version in the file name',
 					'error-firmware_models' => 'no valid model in --models',
+					'error-firmware_vendor' => '--vendor must be yealink or grandstream',
+					'error-firmware_vendor_mismatch' => 'the file is not firmware of the --vendor given',
 					'error-firmware_exists' => 'this vendor, family and version is already in the library',
 					'error-firmware_store' => 'the file could not be stored (see syslog)',
 				];

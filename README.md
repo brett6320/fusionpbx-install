@@ -203,9 +203,11 @@ yet tried on phones; try one device of each model before a whole domain.
 - **Library** (superadmin): import the Yealink `.rom` from the vendor zip (the
   family and version come from the file name, e.g. `T46S(T48S,T42S,T41S)-66.86.0.15.rom`
   is family 66) or the Grandstream `<model>fw.bin` with its version and the
-  models it serves. Files larger than PHP's upload limit: `runuser -u www-data
+  models it serves. Manufacturer and models are typed, with suggestions from
+  the supported templates and the models your devices report; add a field per
+  model. Files larger than PHP's upload limit: `runuser -u www-data
   -- php /var/www/fusionpbx/app/x_provision_overlay/resources/cli/firmware.php
-  --import <file> [--version <v>] [--models <list>] [--note <text>]`
+  --import <file> [--vendor <name>] [--version <v>] [--models <list>] [--note <text>]`
   (www-data must be able to read the file). A release in use by a domain, a
   device, a rollout or any setting can't be deleted; a deleted release's file
   stays downloadable for a day.

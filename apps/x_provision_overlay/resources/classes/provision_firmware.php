@@ -45,6 +45,9 @@ class provision_firmware {
 	const not_fetching_seconds = 86400;
 	const rollout_lock_timeout = 30;
 
+	//manufacturers the library takes, as shown
+	const vendors = ['yealink' => 'Yealink', 'grandstream' => 'Grandstream'];
+
 	//seconds between a rollout device's fetch and its reboot: a Yealink that fetches a newer ROM downloads and
 	//flashes it on its own (and reboots), so it must not be rebooted meanwhile; a Grandstream checks at boot
 	const reboot_delay = ['yealink' => 1200, 'grandstream' => 300];
@@ -323,6 +326,47 @@ class provision_firmware {
 	}
 
 	/**
+	 * Models named in a Yealink ROM file name (T46S(T48S,T42S,T41S)-66.86.0.15.rom), comma separated.
+	 */
+	public static function rom_name_models(string $name): string {
+		if (preg_match('/^(.*?)-?[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,4}\.rom$/i', $name, $m) !== 1) {
+			return '';
+		}
+		return self::normalize_models(preg_replace('/[()]/', ',', $m[1]));
+	}
+
+	/**
+	 * Model suggestions per manufacturer for the library form: the single-model catalog templates, and the
+	 * models devices have been given or have reported.
+	 *
+	 * @return array vendor => [model]
+	 */
+	public function model_suggestions(): array {
+		$models = array_fill_keys(array_keys(self::vendors), []);
+		foreach (array_keys(self::catalog) as $template) {
+			[$vendor, $name] = array_pad(explode('/', $template, 2), 2, '');
+			if (isset($models[$vendor]) && preg_match('/^[a-z]+[0-9]+[a-z0-9]*$/', $name) === 1 && strpos($name, 'xx') === false) {
+				$models[$vendor][strtoupper($name)] = true;
+			}
+		}
+		$sql = "select distinct lower(device_vendor) as vendor, device_model, device_provisioned_agent from v_devices ";
+		$sql .= "where lower(device_vendor) in ('yealink', 'grandstream') ";
+		foreach ($this->query($sql) as $row) {
+			$vendor = (string) $row['vendor'];
+			foreach ([strtoupper(trim((string) $row['device_model'])), self::parse_agent($vendor, (string) $row['device_provisioned_agent'])['model']] as $model) {
+				if (preg_match('/^[A-Z0-9][A-Z0-9-]{1,30}$/', $model) === 1) {
+					$models[$vendor][$model] = true;
+				}
+			}
+		}
+		foreach ($models as $vendor => $list) {
+			$models[$vendor] = array_keys($list);
+			sort($models[$vendor], SORT_NATURAL);
+		}
+		return $models;
+	}
+
+	/**
 	 * Grandstream firmware file names: lower case, ending in fw.bin (gxp2170fw.bin).
 	 */
 	public static function valid_grandstream_file(string $name): bool {
@@ -588,10 +632,15 @@ class provision_firmware {
 	 *
 	 * @return array ['error' => language key|null, 'firmware_uuid' => string]
 	 */
-	public function import(string $path, string $name, string $version, string $models, string $note, string $username): array {
+	public function import(string $path, string $name, string $version, string $models, string $note, string $username, string $vendor = ''): array {
 		$result = ['error' => null, 'firmware_uuid' => ''];
 		$name = basename(trim($name));
 		$version = trim($version);
+		$vendor = strtolower(trim($vendor));
+		if ($vendor !== '' && !isset(self::vendors[$vendor])) {
+			$result['error'] = 'error-firmware_vendor';
+			return $result;
+		}
 		if (!is_file($path) || is_link($path) || !is_readable($path) || (int) filesize($path) < 1) {
 			$result['error'] = 'error-firmware_file';
 			return $result;
@@ -607,7 +656,8 @@ class provision_firmware {
 				$result['error'] = 'error-firmware_version_mismatch';
 				return $result;
 			}
-			$row = ['firmware_vendor' => 'yealink', 'firmware_family' => $rom['family'], 'firmware_version' => $rom['version'], 'firmware_file' => $rom['version'].'.rom', 'firmware_models' => ''];
+			//models are informational for Yealink: the family comes from the version
+			$row = ['firmware_vendor' => 'yealink', 'firmware_family' => $rom['family'], 'firmware_version' => $rom['version'], 'firmware_file' => $rom['version'].'.rom', 'firmware_models' => self::normalize_models($models !== '' ? $models : self::rom_name_models($name))];
 		}
 		elseif (self::valid_grandstream_file(strtolower($name))) {
 			if (!self::valid_version($version)) {
@@ -624,6 +674,10 @@ class provision_firmware {
 		}
 		else {
 			$result['error'] = 'error-firmware_name';
+			return $result;
+		}
+		if ($vendor !== '' && $vendor !== $row['firmware_vendor']) {
+			$result['error'] = 'error-firmware_vendor_mismatch';
 			return $result;
 		}
 
@@ -686,12 +740,12 @@ class provision_firmware {
 	/**
 	 * Adds a release from an upload of the library page.
 	 */
-	public function import_upload(array $upload, string $version, string $models, string $note, string $username): array {
+	public function import_upload(array $upload, string $version, string $models, string $note, string $username, string $vendor = ''): array {
 		if (($upload['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_OK || !is_uploaded_file((string) ($upload['tmp_name'] ?? ''))) {
 			$code = $upload['error'] ?? UPLOAD_ERR_NO_FILE;
 			return ['error' => ($code === UPLOAD_ERR_INI_SIZE || $code === UPLOAD_ERR_FORM_SIZE) ? 'error-firmware_too_large' : 'error-firmware_file', 'firmware_uuid' => ''];
 		}
-		return $this->import((string) $upload['tmp_name'], (string) ($upload['name'] ?? ''), $version, $models, $note, $username);
+		return $this->import((string) $upload['tmp_name'], (string) ($upload['name'] ?? ''), $version, $models, $note, $username, $vendor);
 	}
 
 	/**
