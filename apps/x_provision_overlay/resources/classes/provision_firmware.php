@@ -345,7 +345,7 @@ class provision_firmware {
 		$models = array_fill_keys(array_keys(self::vendors), []);
 		foreach (array_keys(self::catalog) as $template) {
 			[$vendor, $name] = array_pad(explode('/', $template, 2), 2, '');
-			if (isset($models[$vendor]) && preg_match('/^[a-z]+[0-9]+[a-z0-9]*$/', $name) === 1 && strpos($name, 'xx') === false) {
+			if (isset($models[$vendor]) && preg_match('/^[a-z]+[0-9]+[a-z0-9]*$/', $name) === 1 && strpos($name, 'xx') === false && preg_match('/[0-9]x/', $name) !== 1) {
 				$models[$vendor][strtoupper($name)] = true;
 			}
 		}
@@ -650,7 +650,14 @@ class provision_firmware {
 			return $result;
 		}
 
+		//blank model fields (and stray commas) count as no models, so the default from the file name applies
+		$models = trim($models, " \t,");
 		$rom = self::parse_rom_name($name);
+		$detected = ($rom !== null) ? 'yealink' : (self::valid_grandstream_file(strtolower($name)) ? 'grandstream' : '');
+		if ($vendor !== '' && $detected !== '' && $vendor !== $detected) {
+			$result['error'] = 'error-firmware_vendor_mismatch';
+			return $result;
+		}
 		if ($rom !== null) {
 			if ($version !== '' && $version !== $rom['version']) {
 				$result['error'] = 'error-firmware_version_mismatch';
@@ -674,10 +681,6 @@ class provision_firmware {
 		}
 		else {
 			$result['error'] = 'error-firmware_name';
-			return $result;
-		}
-		if ($vendor !== '' && $vendor !== $row['firmware_vendor']) {
-			$result['error'] = 'error-firmware_vendor_mismatch';
 			return $result;
 		}
 

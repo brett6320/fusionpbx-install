@@ -82,7 +82,7 @@
 				case 'import':
 					//one model per field; a field may also hold a comma separated list
 					$models = $_POST['models'] ?? [];
-					$models = is_array($models) ? implode(',', array_map('strval', $models)) : (string) $models;
+					$models = is_array($models) ? implode(',', array_filter(array_map('trim', array_map('strval', array_filter($models, 'is_scalar'))), 'strlen')) : (string) $models;
 					$result = $firmware->import_upload($_FILES['firmware'] ?? [], (string) ($_POST['version'] ?? ''), $models, (string) ($_POST['note'] ?? ''), $username, (string) ($_POST['vendor'] ?? ''));
 					$error = $result['error'];
 					$done = $text['message-firmware_imported'];
@@ -262,8 +262,6 @@
 		echo "<form method='post' enctype='multipart/form-data' action='".escape($page)."'>\n";
 		echo "<input type='hidden' name='action' value='import'>\n";
 		echo "<input type='hidden' name='".$token['name']."' value='".$token['hash']."'>\n";
-		echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
-		echo "<tr><td class='vncellreq' width='20%'>".$text['label-firmware_file']."</td><td class='vtable'><input type='file' name='firmware' accept='.rom,.bin' required='required'><br />".str_replace('{max}', escape((string) ini_get('upload_max_filesize')), $text['description-firmware_file'])."</td></tr>\n";
 		//manufacturer and models: free entry with suggestions
 		$suggestions = $firmware->model_suggestions();
 		echo "<datalist id='firmware_vendors'>";
@@ -283,9 +281,11 @@
 			echo "<option value='".escape($model)."'>";
 		}
 		echo "</datalist>\n";
-		echo "<tr><td class='vncell'>".$text['label-firmware_vendor']."</td><td class='vtable'><input class='formfld' type='text' name='vendor' id='firmware_vendor' list='firmware_vendors' maxlength='32' autocomplete='off'><br />".$text['description-firmware_vendor']."</td></tr>\n";
+		echo "<table width='100%' border='0' cellpadding='0' cellspacing='0'>\n";
+		echo "<tr><td class='vncellreq' width='20%'>".$text['label-firmware_file']."</td><td class='vtable'><input type='file' name='firmware' accept='.rom,.bin' required='required'><br />".str_replace('{max}', escape((string) ini_get('upload_max_filesize')), $text['description-firmware_file'])."</td></tr>\n";
+		echo "<tr><td class='vncell'>".$text['label-firmware_vendor']."</td><td class='vtable'><input class='formfld' type='text' name='vendor' id='firmware_vendor' list='firmware_vendors' maxlength='32'><br />".$text['description-firmware_vendor']."</td></tr>\n";
 		echo "<tr><td class='vncell'>".$text['label-firmware_version']."</td><td class='vtable'><input class='formfld' type='text' name='version' maxlength='32'><br />".$text['description-firmware_version']."</td></tr>\n";
-		echo "<tr><td class='vncell'>".$text['label-firmware_models']."</td><td class='vtable'><div id='firmware_models'><input class='formfld firmware-model' type='text' name='models[]' list='firmware_models_all' maxlength='32' autocomplete='off'></div>";
+		echo "<tr><td class='vncell'>".$text['label-firmware_models']."</td><td class='vtable'><div id='firmware_models'><input class='formfld firmware-model' type='text' name='models[]' list='firmware_models_all' maxlength='32'></div>";
 		echo button::create(['type'=>'button','label'=>$text['button-firmware_add_model'],'icon'=>$settings->get('theme', 'button_icon_add'),'onclick'=>'firmware_add_model();']);
 		echo "<br />".$text['description-firmware_models']."</td></tr>\n";
 		echo "<tr><td class='vncell'>".$text['label-firmware_note']."</td><td class='vtable'><input class='formfld' type='text' name='note' maxlength='255'></td></tr>\n";
@@ -309,7 +309,6 @@
 		echo "	input.type = 'text';\n";
 		echo "	input.name = 'models[]';\n";
 		echo "	input.maxLength = 32;\n";
-		echo "	input.autocomplete = 'off';\n";
 		echo "	input.style.display = 'block';\n";
 		echo "	input.style.marginTop = '4px';\n";
 		echo "	document.getElementById('firmware_models').appendChild(input);\n";
@@ -317,6 +316,7 @@
 		echo "	input.focus();\n";
 		echo "}\n";
 		echo "document.getElementById('firmware_vendor').addEventListener('input', firmware_model_list);\n";
+		echo "firmware_model_list();\n";
 		echo "</script>\n";
 
 		echo "<div class='card'>\n";

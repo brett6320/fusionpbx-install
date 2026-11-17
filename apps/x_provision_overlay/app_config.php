@@ -148,7 +148,7 @@
 		$z++;
 		$apps[$x]['db'][$y]['fields'][$z]['name'] = "firmware_models";
 		$apps[$x]['db'][$y]['fields'][$z]['type'] = "text";
-		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "Grandstream models the file serves, comma separated.";
+		$apps[$x]['db'][$y]['fields'][$z]['description']['en-us'] = "Models the file serves, comma separated (Grandstream: matched against the model phones report; Yealink: informational).";
 		$z++;
 		$apps[$x]['db'][$y]['fields'][$z]['name'] = "firmware_size";
 		$apps[$x]['db'][$y]['fields'][$z]['type'] = "numeric";
