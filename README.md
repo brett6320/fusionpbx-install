@@ -194,7 +194,7 @@ sync by hand: `runuser -u www-data -- php
 
 ## Web interface branding
 
-**Accounts > Branding** (also the Branding button on Provision Templates) sets
+**Advanced > Branding** (also the Branding button on Provision Templates) sets
 the logos, favicon, page title and menu text of the web interface. Design:
 [docs/design/branding.md](docs/design/branding.md).
 
@@ -223,7 +223,9 @@ the logos, favicon, page title and menu text of the web interface. Design:
   assigned under Themes that sets these items, or a user's own theme settings,
   take precedence. The login brand text is not offered: FusionPBX does not
   show it.
-- The menu item is added on a fresh install. After an upgrade, run
+- The menu item is under Advanced, which upstream shows to superadmins only;
+  domain admins use the Branding button on Provision Templates. The item is
+  added on a fresh install. After an upgrade, run
   `./upgrade.sh --restore-menu` (resets menu edits) or add it in Menu Manager
   (`/app/x_provision_overlay/x_provision_overlay_branding.php`).
 - This replaces the phone branding page (Provision Branding). Images uploaded
