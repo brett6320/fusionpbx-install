@@ -141,7 +141,6 @@ $text['warning-wallpaper_memory']['en-us'] = "PHP memory_limit is {limit}: image
 $text['button-wallpapers']['en-us'] = "Wallpapers";
 $text['button-wallpapers_domain']['en-us'] = "This Domain";
 $text['button-wallpapers_global']['en-us'] = "System Defaults";
-$text['button-branding']['en-us'] = "Branding";
 $text['button-branding_global']['en-us'] = "System Default";
 $text['button-branding_take_over']['en-us'] = "Take Over";
 $text['button-remove']['en-us'] = "Remove";

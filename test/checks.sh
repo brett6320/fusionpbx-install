@@ -127,6 +127,7 @@ while IFS= read -r line; do
 done < <(runuser -u www-data -- php /usr/src/x-install/test/firmware_rollout.php 2>&1 || echo "FAIL  firmware rollout test exited non-zero")
 systemctl start x-endpoint-manager.timer x-provision-firmware.timer
 
+check "branding is superadmin only" test "$(db "select string_agg(distinct group_name, ',' order by group_name) from v_group_permissions where permission_name in ('x_provision_overlay_branding_view','x_provision_overlay_branding_edit')")" = "superadmin"
 #web interface branding: settings logic (written, removed, domain over system, own values kept), then a
 #system and a domain login logo served without a session and shown on the login page of each host
 while IFS= read -r line; do

@@ -194,15 +194,15 @@ sync by hand: `runuser -u www-data -- php
 
 ## Web interface branding
 
-**Advanced > Branding** (also the Branding button on Provision Templates) sets
-the logos, favicon, page title and menu text of the web interface. Design:
+**Advanced > Branding** (superadmins only) sets the logos, favicon, page title
+and menu text of the web interface. Design:
 [docs/design/branding.md](docs/design/branding.md).
 
-- **This Domain** (domain admins): menu logo, collapsed side menu icon, login
-  logo and its width and height, favicon, page title, menu brand text and menu
-  brand (image, text, image and text, none). **System Default** (superadmins):
-  the same, for every domain without its own value. Items left empty fall back
-  to the system default, then to FusionPBX's own.
+- **This Domain** (the domain chosen in the domain selector): menu logo,
+  collapsed side menu icon, login logo and its width and height, favicon, page
+  title, menu brand text and menu brand (image, text, image and text, none).
+  **System Default**: the same, for every domain without its own value. Items
+  left empty fall back to the system default, then to FusionPBX's own.
 - Logos: PNG, JPEG, GIF or WebP up to `x_provision_overlay.asset_max_bytes`
   (default 2 MB) and 4096 x 4096 pixels; favicon ICO or PNG up to 256 KiB.
   SVG is not accepted. Images are served without a login at
@@ -223,9 +223,10 @@ the logos, favicon, page title and menu text of the web interface. Design:
   assigned under Themes that sets these items, or a user's own theme settings,
   take precedence. The login brand text is not offered: FusionPBX does not
   show it.
-- The menu item is under Advanced, which upstream shows to superadmins only;
-  domain admins use the Branding button on Provision Templates. The item is
-  added on a fresh install. After an upgrade, run
+- Domain admins have no access. `./upgrade.sh` removes the access they had
+  before (FusionPBX restores default group permissions), unless the
+  permission or the admin group is marked protected under Group Manager. The menu item is added on a fresh
+  install. After an upgrade, run
   `./upgrade.sh --restore-menu` (resets menu edits) or add it in Menu Manager
   (`/app/x_provision_overlay/x_provision_overlay_branding.php`).
 - This replaces the phone branding page (Provision Branding). Images uploaded

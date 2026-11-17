@@ -9,8 +9,8 @@ to the commit pinned in `config.sh` (`58ca4e9`).
 - Brand the FusionPBX **web interface**: menu logo, collapsed side menu icon,
   login logo and its size, favicon, page title, menu brand text and menu
   brand type. No colors (those belong to upstream's Themes app).
-- A **system default** set by a superadmin, and a **per-domain override** set
-  by the domain's admins. An item a domain leaves empty uses the system
+- A **system default** and a **per-domain override**, both set by
+  superadmins (a domain's override is set with that domain selected). An item a domain leaves empty uses the system
   default; with none, upstream's default applies.
 - Values set by hand win (3.3): the page never overwrites a setting it did not
   write.
@@ -63,11 +63,15 @@ host name shows the system default.
 
 | Tab | Written as | Permission |
 |---|---|---|
-| This Domain (session domain) | domain settings of the domain | `x_provision_overlay_branding_edit` (admin, superadmin) |
+| This Domain (session domain) | domain settings of the domain | `x_provision_overlay_branding_edit` (superadmin) |
 | System Default | default settings | `x_provision_overlay_branding_global` (superadmin) |
 
-`x_provision_overlay_branding_view` (admin, superadmin) shows the page and
-its menu item.
+`x_provision_overlay_branding_view` (superadmin) shows the page and its menu
+item. Domain admins have no access: branding is a server setting, and the
+page lives under the superadmin-only Advanced menu. On an existing install,
+`upgrade.sh` restores default group permissions, which removes the admin
+group's earlier grants, unless the permission or the admin group is marked
+protected.
 
 ### 3.2 Values
 
@@ -186,11 +190,9 @@ name: a superadmin may view a domain under another host.
   are; change or delete them under Domain Settings.
 - The permission `x_provision_overlay_asset_edit` stays: the Wallpapers page
   uses it for domain wallpapers.
-- The **menu item** Branding is under Advanced and is added by a fresh
-  install. Upstream shows the Advanced menu to superadmins only, so domain
-  admins reach the page from the Branding button on Provision Templates. On an upgrade upstream does not restore menus;
-  run `upgrade.sh --restore-menu`, or add it under Menu Manager. The page is
-  also reachable from the Branding button on Provision Templates.
+- The **menu item** Branding is under Advanced (superadmins only) and is
+  added by a fresh install. On an upgrade upstream does not restore menus;
+  run `upgrade.sh --restore-menu`, or add it under Menu Manager.
 - The new table and permissions are created by `upgrade.php` as usual.
 
 ## 7. UI
