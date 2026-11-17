@@ -163,11 +163,11 @@ the next time it fetches its configuration; some models only do so at boot.
   a device setting of the same name (for example
   `provision.yealink_t46s_wallpaper`). Such devices are listed on the page as
   "uses its own wallpaper"; remove that value to switch them to the managed
-  one. Domain settings written by the older "apply to vendor settings" button
-  count as such a value. Snom D735, D765, D785, D862 and D865 are counted as
-  "own" whenever the domain sets `snom_wallpaper_url`, to be safe, although
-  their templates may prefer the model-specific value we write; the label can
-  be wrong for them.
+  one. Domain settings written by the former "apply to vendor settings" button
+  (removed with the phone branding page) count as such a value. Snom D735,
+  D765, D785, D862 and D865 are counted as "own" whenever the domain sets
+  `snom_wallpaper_url`, to be safe, although their templates may prefer the
+  model-specific value we write; the label can be wrong for them.
 - **To opt one device out**, disable its wallpaper rows in the device's
   settings. Deleting them is not an opt-out: they are written again. Changing
   a value makes the row yours; it is then left alone.
@@ -191,6 +191,43 @@ restore the 2-minute sync rewrites the device settings from them. To run the
 sync by hand: `runuser -u www-data -- php
 /var/www/fusionpbx/app/x_provision_overlay/resources/cli/wallpapers.php --sync
 [--domain <uuid>]`.
+
+## Web interface branding
+
+**Accounts > Branding** (also the Branding button on Provision Templates) sets
+the logos, favicon, page title and menu text of the web interface. Design:
+[docs/design/branding.md](docs/design/branding.md).
+
+- **This Domain** (domain admins): menu logo, collapsed side menu icon, login
+  logo and its width and height, favicon, page title, menu brand text and menu
+  brand (image, text, image and text, none). **System Default** (superadmins):
+  the same, for every domain without its own value. Items left empty fall back
+  to the system default, then to FusionPBX's own.
+- Logos: PNG, JPEG, GIF or WebP up to `x_provision_overlay.asset_max_bytes`
+  (default 2 MB) and 4096 x 4096 pixels; favicon ICO or PNG up to 256 KiB.
+  SVG is not accepted. Images are served without a login at
+  `/branding-assets/<global|domain uuid>/<file>` (the login page needs them).
+- The page writes theme settings (Default Settings for the system, Domain
+  Settings for a domain), described as managed by Branding. **A theme setting
+  set by hand wins**: the page shows it and offers **Take Over**, which
+  disables that row (enable it again to go back). The system page title needs
+  this once, because FusionPBX seeds `theme > title = FusionPBX`. Disabling a
+  row the page wrote keeps it from being written again.
+- A domain's branding shows to users signed in to that domain, and on the
+  login page only when the site is opened with the domain's name. A Theme
+  assigned under Themes that sets these items, or a user's own theme settings,
+  take precedence. The login brand text is not offered: FusionPBX does not
+  show it.
+- The menu item is added on a fresh install. After an upgrade, run
+  `./upgrade.sh --restore-menu` (resets menu edits) or add it in Menu Manager
+  (`/app/x_provision_overlay/x_provision_overlay_branding.php`).
+- This replaces the phone branding page (Provision Branding). Images uploaded
+  there are still served to phones at their URLs, read only, and are listed on
+  the domain tab; domain settings its "apply to vendor settings" wrote stay
+  until changed under Domain Settings.
+
+The images are under `/var/lib/fusionpbx/provision_overlay/branding/`, which
+backups include.
 
 ## Phone firmware
 

@@ -11,5 +11,15 @@
 	$apps[$x]['menu'][$y]['groups'][] = "admin";
 	$apps[$x]['menu'][$y]['groups'][] = "superadmin";
 	$y++;
+	$apps[$x]['menu'][$y]['title']['en-us'] = "Branding";
+	$apps[$x]['menu'][$y]['uuid'] = "48ea9ec4-cd5c-4710-b21a-776d05fec969";
+	$apps[$x]['menu'][$y]['parent_uuid'] = "bc96d773-ee57-0cdd-c3ac-2d91aba61b55";
+	$apps[$x]['menu'][$y]['category'] = "internal";
+	$apps[$x]['menu'][$y]['icon'] = "";
+	$apps[$x]['menu'][$y]['path'] = "/app/x_provision_overlay/x_provision_overlay_branding.php";
+	$apps[$x]['menu'][$y]['order'] = "";
+	$apps[$x]['menu'][$y]['groups'][] = "admin";
+	$apps[$x]['menu'][$y]['groups'][] = "superadmin";
+	$y++;
 
 ?>
