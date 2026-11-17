@@ -124,7 +124,7 @@ change at their next provisioning.
 
 ## Phone wallpapers
 
-**Accounts > Provision Templates > Wallpapers** sets one wallpaper
+**Applications > Provision Templates > Wallpapers** sets one wallpaper
 per screen size for the phones of a domain. Upload any PNG or JPEG (up to
 `x_provision_overlay.asset_max_bytes`, default 2 MB, and 4096 x 4096 pixels):
 it is scaled to cover the size, the center is kept, transparency becomes
@@ -238,7 +238,7 @@ backups include.
 
 ## Phone firmware
 
-**Accounts > Provision Templates > Firmware** points the Yealink and
+**Applications > Provision Templates > Firmware** points the Yealink and
 Grandstream phones of a domain at firmware files kept on this server, and
 moves them to a new release in batches. Design and limits:
 [docs/design/provision_firmware.md](docs/design/provision_firmware.md). Not
